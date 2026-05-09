@@ -1,0 +1,85 @@
+[package]
+name = "catog-automation"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "catog_automation_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+portable-pty = "0.8"
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "time", "process", "io-util"] }
+futures = "0.3"
+base64 = "0.22"
+log = "0.4"
+env_logger = "0.11"
+regex = "1.10"
+once_cell = "1.19"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+image = "0.24"
+imageproc = "0.23"
+rdev = "0.5"
+enigo = "0.2"
+parking_lot = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+async-trait = "0.1"
+rand = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = [
+    "winuser", "processthreadsapi", "handleapi", "synchapi",
+    "wingdi", "dwmapi", "shellapi", "combaseapi", "objbase",
+    "oleauto", "winerror", "winnt", "windef", "minwindef",
+    "psapi", "tlhelp32", "errhandlingapi"
+] }
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_Graphics_Dwm",
+    "Win32_System_ProcessStatus"
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.25"
+objc = "0.2"
+core-foundation = "0.9"
+core-graphics = "0.23"
+accessibility = "0.2"
+accessibility-sys = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11 = { version = "2.21", features = ["xlib", "xtest", "xrandr", "xinerama"] }
+x11rb = { version = "0.13", features = ["all-extensions"] }
+atspi = "0.19"
+wayland-client = "0.31"
+smithay-client-toolkit = "0.18"
+evdev = "0.12"
+uinput = "0.1"
+
+[dev-dependencies]
+tempfile = "3.8"

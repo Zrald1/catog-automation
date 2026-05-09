@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CATOG Automation</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <main class="app-shell" id="app-shell">
+      <aside class="panel threads-panel" id="threads-panel">
+        <div class="panel-header">
+          <h2>Sessions</h2>
+        </div>
+        <button class="new-session-btn" id="new-session-btn">
+          <span class="new-session-icon">+</span>
+          <span>New Session</span>
+        </button>
+        <ul id="session-list" class="session-list"></ul>
+      </aside>
+
+      <section class="panel chat-panel" id="chat-panel">
+        <header>
+          <div class="chat-header-top">
+            <button class="menu-toggle" id="menu-toggle" aria-label="Toggle sessions panel">
+              <span>&#9776;</span>
+            </button>
+            <div class="chat-title-wrap">
+              <h1>CATOG Automation</h1>
+              <p>Desktop MVP: local orchestrator + tool routing</p>
+            </div>
+
+          </div>
+        </header>
+        <div id="chat-log" class="chat-log"></div>
+        <form id="chat-form" class="chat-form">
+          <input id="chat-input" placeholder="Ask CATOG to do a desktop task..." required autocomplete="off" />
+          <button type="submit" id="chat-send-btn">Send</button>
+        </form>
+      </section>
+
+      <aside class="panel terminal-panel" id="terminal-panel">
+        <div class="panel-header">
+          <div class="panel-icon terminal-icon">&#9000;</div>
+          <h2>Terminal</h2>
+          <button class="widget-close terminal-close" id="close-terminal" aria-label="Close terminal">&times;</button>
+        </div>
+        <div id="terminal-container" class="terminal-container"></div>
+      </aside>
+
+      <aside class="panel status-panel" id="status-panel">
+        <div class="panel-header">
+          <div class="panel-icon">&#9881;</div>
+          <h2>Integrations</h2>
+        </div>
+
+        <div class="integration-buttons">
+          <button class="integration-btn" id="btn-mcp">
+            <span class="integration-label">MCP</span>
+          </button>
+          <button class="integration-btn" id="btn-ai">
+            <span class="integration-label">AI AMD GPU</span>
+          </button>
+          <button class="integration-btn" id="btn-telegram">
+            <span class="integration-label">Telegram</span>
+          </button>
+        </div>
+
+        <div class="mcp-servers-list" id="mcp-servers-list">
+          <div class="panel-header">
+            <div class="panel-icon">&#9679;</div>
+            <h3>MCP Servers</h3>
+          </div>
+          <div class="mcp-servers-container" id="mcp-servers-container">
+            <!-- Server status items will be dynamically added here -->
+          </div>
+        </div>
+
+        <div class="panel-header">
+          <div class="panel-icon">&#9881;</div>
+          <h3>Automated Skills</h3>
+        </div>
+        <div class="skill-buttons">
+          <button class="skill-btn" id="btn-aiz-skill">+ Add Skill</button>
+          <button class="skill-btn" id="btn-import-skill">Import Skill</button>
+          <button class="skill-btn" id="btn-export-skill">Export Skill</button>
+        </div>
+        <div id="skills-list" class="skills-list"></div>
+
+        <div id="import-skill-widget" class="widget hidden">
+          <div class="widget-header">
+            <h3>Import Skill</h3>
+            <button class="widget-close" id="close-import-skill">&times;</button>
+          </div>
+          <div class="widget-body">
+            <div class="drop-zone" id="import-drop-zone">
+              <div class="drop-zone-icon">&#128229;</div>
+              <p class="drop-zone-text">Drag & drop a .catog skill file here</p>
+              <p class="drop-zone-hint">or click to browse</p>
+              <input type="file" id="import-skill-file" accept=".catog" hidden />
+            </div>
+            <div class="file-preview hidden" id="import-file-preview">
+              <div class="file-preview-icon">&#128196;</div>
+              <div class="file-preview-info">
+                <span class="file-preview-name" id="import-preview-name"></span>
+                <span class="file-preview-size" id="import-preview-size"></span>
+                <span class="format-badge" id="import-format-badge"></span>
+              </div>
+              <button class="file-preview-remove" id="import-preview-remove">&times;</button>
+            </div>
+            <div class="form-group">
+              <label for="import-skill-name">Skill Name (optional)</label>
+              <input type="text" id="import-skill-name" placeholder="e.g. my-custom-skill" />
+            </div>
+            <button class="widget-save" id="save-import-skill">Import Skill</button>
+            <div class="toast hidden" id="import-toast"></div>
+          </div>
+        </div>
+
+          <div id="export-skill-widget" class="widget hidden">
+          <div class="widget-header">
+            <h3>Export Skill</h3>
+            <button class="widget-close" id="close-export-skill">&times;</button>
+          </div>
+          <div class="widget-body">
+            <div class="form-group">
+              <label for="export-skill-select">Select Skill to Export</label>
+              <select id="export-skill-select">
+                <option value="">-- Select a skill --</option>
+              </select>
+            </div>
+            <div class="export-preview hidden" id="export-preview">
+              <div class="export-preview-header">
+                <span class="export-preview-title">Preview (.catog)</span>
+                <button class="export-preview-copy" id="export-preview-copy">&#128203; Copy</button>
+              </div>
+              <pre class="export-preview-code" id="export-preview-code"></pre>
+            </div>
+            <button class="widget-save" id="save-export-skill">Export Skill</button>
+            <div class="toast hidden" id="export-toast"></div>
+          </div>
+        </div>
+
+        <div id="mcp-widget" class="widget hidden">
+          <div class="widget-header">
+            <h3>Add MCP Server</h3>
+            <button class="widget-close" id="close-mcp">&times;</button>
+          </div>
+          <div class="widget-body">
+            <div class="form-group">
+              <label for="mcp-json">MCP Server JSON Configuration</label>
+              <textarea id="mcp-json" rows="12" placeholder='{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"],
+      "env": { "KEY": "value" }
+    }
+  }
+}'></textarea>
+            </div>
+            <button class="widget-save" id="save-mcp">Add Server</button>
+            <div class="toast hidden" id="mcp-toast"></div>
+          </div>
+        </div>
+
+        <div id="ai-widget" class="widget hidden">
+          <div class="widget-header">
+            <h3>AI AMD GPU</h3>
+            <button class="widget-close" id="close-ai">&times;</button>
+          </div>
+          <div class="widget-body">
+            <div class="ai-section">
+              <h4>🔍 AI Vision</h4>
+              <div class="form-group">
+                <label for="ai-vision-url">Vision Model URL</label>
+                <input type="url" id="ai-vision-url" placeholder="http://134.199.195.14:8000" value="http://134.199.195.14:8000" />
+              </div>
+              <div class="form-group">
+                <label for="ai-vision-model">Vision Model Name</label>
+                <input type="text" id="ai-vision-model" placeholder="Qwen/Qwen2-VL-7B-Instruct" value="" />
+              </div>
+            </div>
+            <div class="ai-section">
+              <h4>🧠 AI Coder</h4>
+              <div class="form-group">
+                <label for="ai-coder-url">Coder Model URL</label>
+                <input type="url" id="ai-coder-url" placeholder="http://134.199.195.14:30000" value="http://134.199.195.14:30000" />
+              </div>
+              <div class="form-group">
+                <label for="ai-coder-model">Coder Model Name</label>
+                <input type="text" id="ai-coder-model" placeholder="Qwen/Qwen3.6-27B" value="" />
+              </div>
+            </div>
+            <div class="ai-status" id="ai-status"></div>
+            <button class="widget-save" id="save-ai">Save & Test Connection</button>
+          </div>
+        </div>
+
+        <div id="telegram-widget" class="widget hidden">
+          <div class="widget-header">
+            <h3>Telegram</h3>
+            <button class="widget-close" id="close-telegram">&times;</button>
+          </div>
+          <div class="widget-body">
+            <div class="ai-section">
+              <h4>Bot Access</h4>
+              <div class="form-group">
+                <label for="telegram-bot-token">Access Token</label>
+                <input type="password" id="telegram-bot-token" placeholder="123456:ABC-DEF..." autocomplete="off" />
+              </div>
+              <div class="form-group">
+                <label for="telegram-chat-id">Chat ID</label>
+                <input type="text" id="telegram-chat-id" placeholder="Optional: auto-filled from first message" autocomplete="off" />
+              </div>
+              <div class="form-group form-group-inline">
+                <label for="telegram-enabled">Enable Telegram Chat</label>
+                <input type="checkbox" id="telegram-enabled" />
+              </div>
+            </div>
+            <div class="ai-status" id="telegram-status"></div>
+            <button class="widget-save" id="save-telegram">Save Telegram</button>
+            <div class="toast hidden" id="telegram-toast"></div>
+          </div>
+        </div>
+
+      </aside>
+    </main>
+
+    <!-- Aiz Skill Builder Modal -->
+    <div id="aiz-skill-backdrop" class="aiz-modal-backdrop hidden">
+      <div id="aiz-skill-widget" class="aiz-modal hidden">
+        <div class="aiz-modal-header">
+          <div class="aiz-modal-title">
+            <span class="aiz-modal-icon">⚡</span>
+            <h3>Aiz Skill Builder</h3>
+            <span class="aiz-modal-subtitle">Visual AI Agent Workflow</span>
+          </div>
+          <button class="aiz-modal-close" id="close-aiz-skill">&times;</button>
+        </div>
+        <div class="aiz-modal-body">
+          <div class="aiz-toolbar">
+            <div class="aiz-toolbar-group">
+              <button class="aiz-btn aiz-btn-primary" id="aiz-run">
+                <span class="aiz-btn-icon">▶</span> Run
+              </button>
+              <button class="aiz-btn hidden" id="aiz-stop">
+                <span class="aiz-btn-icon">⏹</span> Stop
+              </button>
+              <select id="aiz-run-mode" class="aiz-select">
+                <option value="once">Run Once</option>
+                <option value="multiple">Run Multiple</option>
+                <option value="loop">Loop / Repeat</option>
+                <option value="parallel">Parallel</option>
+              </select>
+              <input type="number" id="aiz-run-count" class="aiz-run-count hidden" min="1" max="1000" value="3" title="Number of runs" />
+              <button class="aiz-btn" id="aiz-clear">
+                <span class="aiz-btn-icon">🗑</span> Clear
+              </button>
+              <button class="aiz-btn" id="aiz-save-workflow">
+                <span class="aiz-btn-icon">💾</span> Save
+              </button>
+            </div>
+            <div class="aiz-toolbar-group">
+              <select id="aiz-workflow-select" class="aiz-select">
+                <option value="">Load workflow...</option>
+              </select>
+            </div>
+          </div>
+          <div class="aiz-workspace">
+            <div class="aiz-palette" id="aiz-palette">
+              <div class="aiz-palette-tabs">
+                <button id="aiz-palette-tab-nodes" class="aiz-palette-tab active">Nodes</button>
+                <button id="aiz-palette-tab-workflows" class="aiz-palette-tab">Saved Workflows</button>
+              </div>
+              <div id="aiz-palette-nodes-panel" class="aiz-palette-panel">
+              <div class="aiz-palette-header">
+                <span class="aiz-palette-icon">🧩</span> Node Palette
+              </div>
+              <div class="aiz-palette-desc">Drag nodes to canvas</div>
+              <div class="aiz-node-type" data-type="program">
+                <div class="aiz-node-type-icon aiz-node-type-program">📱</div>
+                <div class="aiz-node-type-info">
+                  <div class="aiz-node-type-name">Program</div>
+                  <div class="aiz-node-type-desc">Launch application</div>
+                </div>
+              </div>
+              <div class="aiz-node-type" data-type="prompt">
+                <div class="aiz-node-type-icon aiz-node-type-prompt">💬</div>
+                <div class="aiz-node-type-info">
+                  <div class="aiz-node-type-name">Prompt</div>
+                  <div class="aiz-node-type-desc">AI instruction</div>
+                </div>
+              </div>
+              <div class="aiz-node-type" data-type="save">
+                <div class="aiz-node-type-icon aiz-node-type-save">💾</div>
+                <div class="aiz-node-type-info">
+                  <div class="aiz-node-type-name">Save</div>
+                  <div class="aiz-node-type-desc">Export results</div>
+                </div>
+              </div>
+              <div id="aiz-custom-nodes"></div>
+              <button id="aiz-add-node-btn" class="aiz-add-node-btn">＋ Add Custom Node</button>
+              </div>
+              <div id="aiz-palette-workflows-panel" class="aiz-palette-panel hidden">
+                <div class="aiz-palette-header">
+                  <span class="aiz-palette-icon">⚡</span> Saved Aiz Workflows
+                </div>
+                <div class="aiz-palette-desc">Open or play workflows without leaving the builder</div>
+                <div class="aiz-play-all-bar">
+                  <button class="aiz-btn aiz-btn-play-all" id="aiz-play-all" title="Run all saved workflows in parallel">
+                    <span class="aiz-btn-icon">▶▶</span> Play All
+                  </button>
+                  <button class="aiz-btn aiz-btn-stop-all hidden" id="aiz-stop-all" title="Stop all running workflows">
+                    <span class="aiz-btn-icon">⏹</span> Stop All
+                  </button>
+                </div>
+                <div id="aiz-builder-workflows-list" class="aiz-builder-workflows-list"></div>
+                <div id="aiz-play-all-output" class="aiz-play-all-output hidden"></div>
+              </div>
+            </div>
+            <div id="aiz-creator-panel" class="aiz-creator-panel hidden">
+              <div class="aiz-creator-header">
+                <span class="aiz-creator-title">Create Custom Node</span>
+                <button id="aiz-creator-close" class="aiz-creator-close">×</button>
+              </div>
+              <div class="aiz-creator-body">
+                <div class="aiz-creator-section-label">Basic Info</div>
+                <div class="aiz-creator-row">
+                  <div class="form-group">
+                    <label>Node Name</label>
+                    <input type="text" id="aiz-creator-name" placeholder="e.g. HTTP Request" />
+                  </div>
+                  <div class="form-group">
+                    <label>Icon</label>
+                    <input type="text" id="aiz-creator-icon" placeholder="🌐" maxlength="2" />
+                  </div>
+                  <div class="form-group">
+                    <label>Color</label>
+                    <select id="aiz-creator-color">
+                      <option value="#3b82f6">Blue</option>
+                      <option value="#10b981">Green</option>
+                      <option value="#f59e0b">Amber</option>
+                      <option value="#ef4444">Red</option>
+                      <option value="#60a5fa">Sky Blue</option>
+                      <option value="#06b6d4">Cyan</option>
+                      <option value="#ec4899">Pink</option>
+                      <option value="#f97316">Orange</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label>Description</label>
+                  <input type="text" id="aiz-creator-desc" placeholder="e.g. Send HTTP request to URL" />
+                </div>
+                <div class="aiz-creator-divider"></div>
+                <div class="aiz-creator-section-label">Configuration</div>
+                <div class="form-group">
+                  <label>Config Fields (JSON)</label>
+                  <textarea id="aiz-creator-fields" rows="4" placeholder='[{"key":"url","label":"URL","type":"text","placeholder":"https://..."}]'></textarea>
+                </div>
+                <div class="form-group">
+                  <label>Execution Code (JS)</label>
+                  <textarea id="aiz-creator-code" rows="5" placeholder="// config = node config, output = previous node output&#10;// Return a string as result&#10;return 'Result: ' + config.url;"></textarea>
+                </div>
+                <div class="aiz-creator-divider"></div>
+                <div class="aiz-creator-ai-section">
+                  <div class="aiz-creator-ai-header">
+                    <span>✨ AI Helper</span>
+                  </div>
+                  <div class="form-group">
+                    <input type="text" id="aiz-creator-ai-prompt" placeholder="Describe the node you want to create..." />
+                  </div>
+                  <button id="aiz-creator-ai-btn" class="aiz-creator-ai-btn">Generate with AI</button>
+                  <div id="aiz-creator-ai-status" class="aiz-creator-ai-status"></div>
+                </div>
+                <div class="aiz-creator-save-row">
+                  <button id="aiz-creator-save" class="aiz-creator-save-btn">Create Node</button>
+                </div>
+              </div>
+            </div>
+            <div class="aiz-canvas" id="aiz-canvas">
+              <svg class="aiz-connectors" id="aiz-connectors"></svg>
+              <div class="aiz-canvas-hint" id="aiz-canvas-hint">
+                <div class="aiz-hint-content">
+                  <span class="aiz-hint-icon">✨</span>
+                  <p>Drag nodes here to build your AI agent workflow</p>
+                  <p class="aiz-hint-sub">Connect nodes to define execution order</p>
+                </div>
+              </div>
+            </div>
+            <div class="aiz-config-panel hidden" id="aiz-config-panel">
+              <div class="aiz-config-header">
+                <span id="aiz-config-title">Configure Node</span>
+                <button id="aiz-config-close">×</button>
+              </div>
+              <div id="aiz-config-body" class="aiz-config-body"></div>
+            </div>
+          </div>
+          <div class="aiz-node-output hidden" id="aiz-node-output"></div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
