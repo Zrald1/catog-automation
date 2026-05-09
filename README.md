@@ -17,7 +17,7 @@
 ### 🧠 Autonomous Orchestration
 - **Visual Grounding**: Integrates with Vision models (Qwen-VL) to "see" and interpret GUI elements in real-time.
 - **Natural Language Control**: Parse complex human intents into multi-step automation sequences.
-- **Self-Learning**: Adaptive skill acquisition system that improves automation accuracy over time.
+
 
 ### 🎮 Precision Control
 - **Input Simulation**: Pixel-perfect mouse movements and keyboard automation with human-like jitter and delays.
