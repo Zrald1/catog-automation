@@ -57,7 +57,7 @@ graph TD
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/Zrald1/catog-automation.git
+   git clone https://github.com/yourusername/catog-automation.git
    cd catog-automation/MainSoftware/catog-automation
    ```
 
