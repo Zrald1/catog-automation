@@ -114,6 +114,356 @@ let savedAizWorkflows: AizWorkflowRecord[] = JSON.parse(localStorage.getItem(AIZ
 let openAndLoadAizWorkflow: ((workflowId: string, autoRun?: boolean) => void) | null = null;
 let aizPlayAllRunning = false;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// SELF-EVOLVING ENGINE — Karpathy Auto-Research Pattern
+// Records working steps, classifies tasks, injects proven context, and ratchets
+// to keep only the best step sequences. Sends ≤2 sentences of UI context.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const EVOLVE_MEMORY_KEY = "catog-evolve-memory";
+const EVOLVE_ENABLED_KEY = "catog-evolve-enabled";
+const EVOLVE_MAX_CATEGORIES = 50;
+const EVOLVE_MAX_SEQUENCES_PER_CAT = 5;
+const EVOLVE_MAX_STEPS_PER_SEQ = 20;
+
+interface EvolveStep {
+  tool: string;
+  args: Record<string, unknown>;
+  result: string;
+  success: boolean;
+  timestamp: number;
+}
+
+interface EvolveSequence {
+  id: string;
+  taskDescription: string;
+  taskKeywords: string[];
+  steps: EvolveStep[];
+  successRate: number;
+  totalRuns: number;
+  lastUsed: number;
+  createdAt: number;
+}
+
+interface EvolveMemoryStore {
+  categories: Record<string, EvolveSequence[]>;
+  totalStepsLearned: number;
+  globalSuccessCount: number;
+  globalTotalCount: number;
+}
+
+let evolveEnabled = localStorage.getItem(EVOLVE_ENABLED_KEY) !== "false";
+let evolveMemory: EvolveMemoryStore = JSON.parse(
+  localStorage.getItem(EVOLVE_MEMORY_KEY) || '{"categories":{},"totalStepsLearned":0,"globalSuccessCount":0,"globalTotalCount":0}'
+);
+let evolveCurrentSteps: EvolveStep[] = [];
+let evolveCurrentTask = "";
+let evolveCurrentCategory = "";
+let evolveLastUISummary = "";
+
+// ── Task Classifier ──
+// Extracts normalized keywords from user request to create a task category.
+function evolveClassifyTask(userMessage: string): { category: string; keywords: string[] } {
+  const msg = userMessage.toLowerCase().replace(/[^a-z0-9\s]/g, " ").trim();
+  const stopwords = new Set(["the", "a", "an", "is", "to", "in", "on", "for", "and", "or", "it", "of", "at", "do", "my", "me", "this", "that", "i", "can", "you", "please", "would", "could", "should", "will", "just"]);
+  const words = msg.split(/\s+/).filter(w => w.length > 2 && !stopwords.has(w));
+
+  // Action-object pairing for category
+  const actionWords = ["open", "close", "click", "type", "navigate", "search", "download", "upload", "create", "delete", "move", "resize", "copy", "paste", "save", "launch", "run", "install", "write", "read", "send", "check", "find", "browse", "scroll", "drag", "maximize", "minimize"];
+  const objectWords = ["browser", "chrome", "safari", "firefox", "file", "folder", "document", "notepad", "terminal", "calculator", "settings", "desktop", "window", "tab", "page", "website", "url", "email", "message", "image", "video", "text", "code", "app", "application", "program", "menu", "button", "link", "form", "input"];
+
+  const actions = words.filter(w => actionWords.some(a => w.includes(a)));
+  const objects = words.filter(w => objectWords.some(o => w.includes(o)));
+
+  // Build category from most distinctive action+object combo
+  const categoryParts: string[] = [];
+  if (actions.length > 0) categoryParts.push(actions[0]);
+  if (objects.length > 0) categoryParts.push(objects[0]);
+  if (categoryParts.length === 0) {
+    // Fallback: use first 2 meaningful words
+    categoryParts.push(...words.slice(0, 2));
+  }
+
+  const category = categoryParts.join("_") || "general";
+  return { category, keywords: words.slice(0, 6) };
+}
+
+// ── Memory Persistence ──
+function evolveSaveMemory(): void {
+  localStorage.setItem(EVOLVE_MEMORY_KEY, JSON.stringify(evolveMemory));
+}
+
+function evolveClearMemory(): void {
+  evolveMemory = { categories: {}, totalStepsLearned: 0, globalSuccessCount: 0, globalTotalCount: 0 };
+  evolveSaveMemory();
+  evolveUpdateUI();
+}
+
+// ── Step Recording ──
+function evolveRecordStep(tool: string, args: Record<string, unknown>, result: string, success: boolean): void {
+  if (!evolveEnabled || !evolveCurrentTask) return;
+  const step: EvolveStep = {
+    tool,
+    args: sanitizeArgsForMemory(args),
+    result: result.substring(0, 200),
+    success,
+    timestamp: Date.now(),
+  };
+  evolveCurrentSteps.push(step);
+
+  // Update global counters
+  evolveMemory.globalTotalCount++;
+  if (success) evolveMemory.globalSuccessCount++;
+
+  evolveSetStatus("recording", `Recording step: ${tool}`);
+}
+
+// Remove large binary data / secrets from args before storing
+function sanitizeArgsForMemory(args: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(args)) {
+    if (key === "_targetApp") continue;
+    if (typeof val === "string" && val.length > 500) {
+      sanitized[key] = val.substring(0, 100) + "…[truncated]";
+    } else {
+      sanitized[key] = val;
+    }
+  }
+  return sanitized;
+}
+
+// ── Karpathy Ratchet: Commit or Revert ──
+// After a task completes, evaluate whether the recorded steps are better
+// than the best existing sequence for this category.
+function evolveRatchetCommit(taskDescription: string, category: string): void {
+  if (!evolveEnabled || evolveCurrentSteps.length === 0) return;
+
+  const workingSteps = evolveCurrentSteps.filter(s => s.success);
+  if (workingSteps.length === 0) {
+    evolveRatchetLog("revert", `No working steps for "${category}" — discarded.`);
+    evolveCurrentSteps = [];
+    return;
+  }
+
+  const successRate = workingSteps.length / evolveCurrentSteps.length;
+  const newSequence: EvolveSequence = {
+    id: `seq-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    taskDescription: taskDescription.substring(0, 200),
+    taskKeywords: evolveClassifyTask(taskDescription).keywords,
+    steps: workingSteps.slice(0, EVOLVE_MAX_STEPS_PER_SEQ),
+    successRate,
+    totalRuns: 1,
+    lastUsed: Date.now(),
+    createdAt: Date.now(),
+  };
+
+  if (!evolveMemory.categories[category]) {
+    evolveMemory.categories[category] = [];
+  }
+
+  const existing = evolveMemory.categories[category];
+
+  // Ratchet: compare against best existing sequence
+  const bestExisting = existing.length > 0
+    ? existing.reduce((best, seq) => seq.successRate > best.successRate ? seq : best)
+    : null;
+
+  if (!bestExisting || successRate >= bestExisting.successRate) {
+    // New sequence is equal or better — commit
+    existing.push(newSequence);
+    evolveMemory.totalStepsLearned += workingSteps.length;
+
+    // Prune: keep only top N sequences per category, ranked by success rate
+    if (existing.length > EVOLVE_MAX_SEQUENCES_PER_CAT) {
+      existing.sort((a, b) => b.successRate - a.successRate || b.lastUsed - a.lastUsed);
+      existing.splice(EVOLVE_MAX_SEQUENCES_PER_CAT);
+    }
+
+    // Prune categories
+    const categoryKeys = Object.keys(evolveMemory.categories);
+    if (categoryKeys.length > EVOLVE_MAX_CATEGORIES) {
+      // Remove oldest, least-used categories
+      const sorted = categoryKeys.map(k => ({
+        key: k,
+        lastUsed: Math.max(...evolveMemory.categories[k].map(s => s.lastUsed)),
+      })).sort((a, b) => a.lastUsed - b.lastUsed);
+      for (let i = 0; i < sorted.length - EVOLVE_MAX_CATEGORIES; i++) {
+        delete evolveMemory.categories[sorted[i].key];
+      }
+    }
+
+    evolveRatchetLog("commit", `✅ Committed ${workingSteps.length} steps for "${category}" (${(successRate * 100).toFixed(0)}% success)`);
+  } else {
+    // Existing is better — revert (don't store)
+    evolveRatchetLog("revert", `↩ Reverted: existing "${category}" sequence is better (${(bestExisting.successRate * 100).toFixed(0)}% > ${(successRate * 100).toFixed(0)}%)`);
+  }
+
+  evolveSaveMemory();
+  evolveCurrentSteps = [];
+  evolveUpdateUI();
+}
+
+// ── Retrieve Best Steps for Task ──
+// Returns the best matching proven step sequence for a given task, limited to
+// a compact 2-sentence description for the AI context.
+function evolveGetProvenContext(userMessage: string): string | null {
+  if (!evolveEnabled) return null;
+
+  const { category, keywords } = evolveClassifyTask(userMessage);
+  evolveCurrentCategory = category;
+
+  // Direct category match
+  let sequences = evolveMemory.categories[category];
+
+  // Fuzzy match: search across all categories for keyword overlap
+  if (!sequences || sequences.length === 0) {
+    let bestMatch: { cat: string; score: number; seqs: EvolveSequence[] } | null = null;
+    for (const [cat, seqs] of Object.entries(evolveMemory.categories)) {
+      const catKeywords = seqs.flatMap(s => s.taskKeywords);
+      const overlap = keywords.filter(k => catKeywords.some(ck => ck.includes(k) || k.includes(ck))).length;
+      if (overlap > 0 && (!bestMatch || overlap > bestMatch.score)) {
+        bestMatch = { cat, score: overlap, seqs };
+      }
+    }
+    if (bestMatch && bestMatch.score >= 2) {
+      sequences = bestMatch.seqs;
+      evolveCurrentCategory = bestMatch.cat;
+    }
+  }
+
+  if (!sequences || sequences.length === 0) return null;
+
+  // Pick the best sequence
+  const best = sequences.reduce((a, b) => a.successRate > b.successRate ? a : b);
+  best.lastUsed = Date.now();
+  best.totalRuns++;
+  evolveSaveMemory();
+
+  // Build compact context (limited to task-specific steps)
+  const stepSummary = best.steps
+    .slice(0, 8)
+    .map((s, i) => `${i + 1}. ${s.tool}(${Object.keys(s.args).join(",")})`)
+    .join(" → ");
+
+  return `[Evolved Memory] For a similar task ("${best.taskDescription.substring(0, 80)}"), proven steps are: ${stepSummary}. This sequence had ${(best.successRate * 100).toFixed(0)}% success rate across ${best.totalRuns} run(s).`;
+}
+
+// ── 2-Sentence UI Summarizer ──
+// Captures a screenshot and generates exactly 2 sentences describing the current
+// computer interface, keeping context lightweight for the AI agent.
+async function evolveGet2SentenceUISummary(): Promise<string> {
+  if (!evolveEnabled) return "";
+  try {
+    const screenshot = await captureScreen();
+    if (!screenshot) return "";
+
+    const summary = await streamVisionChat([
+      {
+        role: "system",
+        content: "You are a concise UI describer. Describe the current computer screen in EXACTLY 2 sentences. Sentence 1: what program/window is active and its state. Sentence 2: what the user can interact with right now. No JSON, no markdown, just 2 plain sentences."
+      },
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: `data:image/png;base64,${screenshot}` } },
+          { type: "text", text: "Describe this screen in exactly 2 sentences." },
+        ],
+      },
+    ]);
+
+    // Strip any thinking tags and enforce 2-sentence limit
+    let cleaned = stripThinking(summary).trim();
+    const sentences = cleaned.match(/[^.!?]+[.!?]+/g) || [cleaned];
+    cleaned = sentences.slice(0, 2).join(" ").trim();
+
+    evolveLastUISummary = cleaned;
+    evolveUpdateUISummaryDisplay(cleaned);
+    return cleaned;
+  } catch {
+    return "";
+  }
+}
+
+// ── UI Dashboard ──
+function evolveSetStatus(state: "idle" | "learning" | "active" | "recording", text: string): void {
+  const indicator = document.getElementById("evolve-indicator");
+  const statusText = document.getElementById("evolve-status-text");
+  if (indicator) {
+    indicator.className = `evolve-indicator ${state}`;
+  }
+  if (statusText) {
+    statusText.textContent = text;
+  }
+}
+
+function evolveUpdateUI(): void {
+  const memCountEl = document.getElementById("evolve-memory-count");
+  const successRateEl = document.getElementById("evolve-success-rate");
+  const stepsLearnedEl = document.getElementById("evolve-steps-learned");
+
+  const totalSequences = Object.values(evolveMemory.categories).reduce((sum, seqs) => sum + seqs.length, 0);
+
+  if (memCountEl) memCountEl.textContent = `${totalSequences}`;
+  if (stepsLearnedEl) stepsLearnedEl.textContent = `${evolveMemory.totalStepsLearned}`;
+  if (successRateEl) {
+    if (evolveMemory.globalTotalCount > 0) {
+      const rate = (evolveMemory.globalSuccessCount / evolveMemory.globalTotalCount * 100).toFixed(0);
+      successRateEl.textContent = `${rate}%`;
+    } else {
+      successRateEl.textContent = "—";
+    }
+  }
+}
+
+function evolveUpdateUISummaryDisplay(text: string): void {
+  const el = document.getElementById("evolve-ui-text");
+  if (el) el.textContent = text || "No UI snapshot yet.";
+}
+
+function evolveRatchetLog(type: "commit" | "revert" | "neutral", message: string): void {
+  const logEl = document.getElementById("evolve-ratchet-log");
+  if (!logEl) return;
+  const entry = document.createElement("div");
+  entry.className = `ratchet-entry ${type}`;
+  entry.textContent = `[${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}] ${message}`;
+  logEl.appendChild(entry);
+  logEl.scrollTop = logEl.scrollHeight;
+
+  // Keep only last 20 entries
+  while (logEl.children.length > 20) {
+    logEl.removeChild(logEl.children[0]);
+  }
+}
+
+function evolveToggleEnabled(): void {
+  evolveEnabled = !evolveEnabled;
+  localStorage.setItem(EVOLVE_ENABLED_KEY, String(evolveEnabled));
+  const iconEl = document.getElementById("evolve-toggle-icon");
+  const labelEl = document.getElementById("evolve-toggle-label");
+  if (iconEl) iconEl.textContent = evolveEnabled ? "⏸" : "▶";
+  if (labelEl) labelEl.textContent = evolveEnabled ? "Enabled" : "Disabled";
+  evolveSetStatus("idle", evolveEnabled ? "Idle — waiting for task" : "Disabled");
+}
+
+// ── Begin/End Task Lifecycle (called from processUserMessage) ──
+function evolveBeginTask(userMessage: string): void {
+  if (!evolveEnabled) return;
+  evolveCurrentTask = userMessage;
+  evolveCurrentSteps = [];
+  const { category } = evolveClassifyTask(userMessage);
+  evolveCurrentCategory = category;
+  evolveSetStatus("learning", `Analyzing: ${category}`);
+  evolveRatchetLog("neutral", `Task started: "${userMessage.substring(0, 60)}…" → category: ${category}`);
+}
+
+function evolveEndTask(): void {
+  if (!evolveEnabled || !evolveCurrentTask) return;
+  evolveRatchetCommit(evolveCurrentTask, evolveCurrentCategory);
+  evolveSetStatus("idle", "Idle — waiting for task");
+  evolveCurrentTask = "";
+  evolveCurrentCategory = "";
+}
+
 // ── Workflow Execution Context (Isolation) ──
 interface WorkflowExecutionContext {
   id: string;
@@ -410,6 +760,24 @@ function buildSkillAwareSystemPrompt(): string {
       })
       .join("\n\n");
     prompt += `\n\n**MCP server tools available (use these when relevant to the user's task):**\n${mcpSection}\n\nTo call an MCP tool, use a \`tool_call\` code block with the server name:\n\`\`\`tool_call\n{"tool": "<tool_name>", "server": "<server_name>", "arguments": {<args>}}\n\`\`\`\nAlways include the "server" field for MCP tools so they route to the correct server.`;
+  }
+
+  return prompt;
+}
+
+// Build the full system prompt with self-evolving context injected
+function buildEvolvedSystemPrompt(userMessage: string): string {
+  let prompt = buildSkillAwareSystemPrompt();
+
+  // Inject proven step memory for similar tasks (Karpathy ratchet pattern)
+  const provenContext = evolveGetProvenContext(userMessage);
+  if (provenContext) {
+    prompt += `\n\n**Self-Evolving Memory (proven steps from past successful runs):**\n${provenContext}\nUse these proven steps as guidance but adapt to the current screen state. Only follow steps that match the current UI.`;
+  }
+
+  // Inject 2-sentence UI context if available
+  if (evolveLastUISummary) {
+    prompt += `\n\n**Current UI State (2-sentence snapshot):**\n${evolveLastUISummary}`;
   }
 
   return prompt;
@@ -2221,9 +2589,14 @@ async function parseToolCalls(text: string, targetApp?: string): Promise<ToolCal
       const res = await executeToolCall(resolvedServer, toolName, enrichedArgs);
       if (chatStopRequested) return;
       results.push({ server_name: resolvedServer, tool_name: toolName, result: res });
+      // Self-Evolving Engine: record successful step
+      evolveRecordStep(toolName, args, res, !res.startsWith("Error:"));
     } catch (e) {
       console.error("Tool call failed:", e);
-      results.push({ server_name: resolvedServer, tool_name: toolName, result: `Error: ${String(e)}` });
+      const errResult = `Error: ${String(e)}`;
+      results.push({ server_name: resolvedServer, tool_name: toolName, result: errResult });
+      // Self-Evolving Engine: record failed step
+      evolveRecordStep(toolName, args, errResult, false);
     }
   };
 
@@ -2319,6 +2692,9 @@ async function processUserMessage(userMessage: string, opts: { source?: "chat" |
 
   if (!userMessage) return "";
 
+  // Self-Evolving Engine: begin task lifecycle
+  evolveBeginTask(userMessage);
+
   appendMessage("user", opts.source === "telegram" ? `[Telegram] ${userMessage}` : userMessage);
   isProcessing = true;
   chatStopRequested = false;
@@ -2331,12 +2707,15 @@ async function processUserMessage(userMessage: string, opts: { source?: "chat" |
   conversationHistory.push({ role: "user", content: userMessage });
   saveSessionById(processingSessionId, conversationHistory);
 
+  // Self-Evolving Engine: capture 2-sentence UI summary before AI processes
+  void evolveGet2SentenceUISummary();
+
   const thinkingEl = appendThinking();
   let finalReply = "";
 
   try {
     const messages: ChatMessage[] = [
-      { role: "system", content: buildSkillAwareSystemPrompt() },
+      { role: "system", content: buildEvolvedSystemPrompt(userMessage) },
       ...conversationHistory.slice(-20),
     ];
 
@@ -2434,6 +2813,9 @@ async function processUserMessage(userMessage: string, opts: { source?: "chat" |
     isProcessing = false;
     chatStopRequested = false;
     setSendBtnProcessing(false);
+
+    // Self-Evolving Engine: end task lifecycle (ratchet commit/revert)
+    evolveEndTask();
   }
   return finalReply;
 }
@@ -5293,6 +5675,21 @@ window.addEventListener("DOMContentLoaded", async () => {
   // Skill widget toggles
   btnImportSkill.addEventListener("click", () => openWidget(importSkillWidget));
   btnExportSkill.addEventListener("click", () => { populateExportSkillSelect(); openWidget(exportSkillWidget); });
+
+  // Self-Evolving Engine controls
+  const evolveClearBtn = document.getElementById("evolve-clear-memory");
+  const evolveToggleBtn = document.getElementById("evolve-toggle");
+  if (evolveClearBtn) evolveClearBtn.addEventListener("click", () => { evolveClearMemory(); evolveRatchetLog("neutral", "Memory cleared by user."); });
+  if (evolveToggleBtn) evolveToggleBtn.addEventListener("click", evolveToggleEnabled);
+  // Initialize evolve UI on startup
+  evolveUpdateUI();
+  if (!evolveEnabled) {
+    evolveSetStatus("idle", "Disabled");
+    const iconEl = document.getElementById("evolve-toggle-icon");
+    const labelEl = document.getElementById("evolve-toggle-label");
+    if (iconEl) iconEl.textContent = "▶";
+    if (labelEl) labelEl.textContent = "Disabled";
+  }
   closeImportSkill.addEventListener("click", () => { closeWidgetFn(importSkillWidget); clearImportPreview(); });
   closeExportSkill.addEventListener("click", () => { closeWidgetFn(exportSkillWidget); exportPreview.classList.add("hidden"); exportSkillSelect.value = ""; });
   saveImportSkill.addEventListener("click", handleImportSkill);

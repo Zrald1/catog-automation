@@ -88,6 +88,46 @@
         </div>
         <div id="skills-list" class="skills-list"></div>
 
+        <div class="panel-header" style="margin-top: 12px;">
+          <div class="panel-icon">🧬</div>
+          <h3>Self-Evolving Engine</h3>
+        </div>
+        <div class="evolve-panel" id="evolve-panel">
+          <div class="evolve-status" id="evolve-status">
+            <span class="evolve-indicator idle" id="evolve-indicator"></span>
+            <span class="evolve-text" id="evolve-status-text">Idle — waiting for task</span>
+          </div>
+          <div class="evolve-stats" id="evolve-stats">
+            <div class="evolve-stat">
+              <span class="evolve-stat-label">Memories</span>
+              <span class="evolve-stat-value" id="evolve-memory-count">0</span>
+            </div>
+            <div class="evolve-stat">
+              <span class="evolve-stat-label">Success Rate</span>
+              <span class="evolve-stat-value" id="evolve-success-rate">—</span>
+            </div>
+            <div class="evolve-stat">
+              <span class="evolve-stat-label">Steps Learned</span>
+              <span class="evolve-stat-value" id="evolve-steps-learned">0</span>
+            </div>
+          </div>
+          <div class="evolve-ui-summary" id="evolve-ui-summary">
+            <div class="evolve-ui-label">📸 UI Context (2-sentence)</div>
+            <div class="evolve-ui-text" id="evolve-ui-text">No UI snapshot yet.</div>
+          </div>
+          <div class="evolve-ratchet" id="evolve-ratchet">
+            <div class="evolve-ui-label">🔄 Ratchet Log</div>
+            <div class="evolve-ratchet-log" id="evolve-ratchet-log"></div>
+          </div>
+          <div class="evolve-controls">
+            <button class="evolve-btn" id="evolve-clear-memory" title="Clear all learned step memories">🗑 Clear Memory</button>
+            <button class="evolve-btn" id="evolve-toggle" title="Enable or disable self-evolving mode">
+              <span id="evolve-toggle-icon">⏸</span>
+              <span id="evolve-toggle-label">Enabled</span>
+            </button>
+          </div>
+        </div>
+
         <div id="import-skill-widget" class="widget hidden">
           <div class="widget-header">
             <h3>Import Skill</h3>
