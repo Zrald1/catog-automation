@@ -103,7 +103,7 @@ OMP_NUM_THREADS=1 vllm serve Qwen/Qwen3-VL-2B-Instruct \
     --port 8000 \
     --dtype bfloat16 \
     --gpu-memory-utilization 0.15 \
-    --max-model-len 16384 \
+    --max-model-len 32768 \
     --kv-cache-dtype fp8 \
     --limit-mm-per-prompt '{"image": 2}' \
     --mm-processor-cache-gb 4 \

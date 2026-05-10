@@ -1691,7 +1691,7 @@ async function streamVisionChat(messages: VisionMessage[]): Promise<string> {
     messages,
     stream: false,
     temperature: 0,
-    max_tokens: 16384,
+    max_tokens: 4096,
   };
 
   let response = await fetch(url, {
