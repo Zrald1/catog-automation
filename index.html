@@ -296,6 +296,23 @@
                 <input type="text" id="ai-coder-model" placeholder="Qwen/Qwen3.6-27B" value="" />
               </div>
             </div>
+            <div class="ai-section">
+              <h4>🧩 OmniParser <span class="aiz-config-hint" style="font-weight:normal;font-size:11px;">(optional — enables OCR + element parsing in addition to the vision model)</span></h4>
+              <div class="form-group">
+                <label class="toggle-row">
+                  <input type="checkbox" id="ai-omniparser-enabled" />
+                  <span>Enable OmniParser — when on, every vision step also runs OmniParser and feeds its results to the coder.</span>
+                </label>
+              </div>
+              <div class="form-group">
+                <label for="ai-omniparser-url">OmniParser URL</label>
+                <input type="url" id="ai-omniparser-url" placeholder="http://localhost:8080" value="http://localhost:8080" />
+              </div>
+              <div class="form-group">
+                <label for="ai-omniparser-endpoint">Parse Endpoint Path</label>
+                <input type="text" id="ai-omniparser-endpoint" placeholder="/parse" value="/parse" />
+              </div>
+            </div>
             <div class="ai-status" id="ai-status"></div>
             <button class="widget-save" id="save-ai">Save & Test Connection</button>
           </div>

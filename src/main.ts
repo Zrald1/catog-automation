@@ -7,6 +7,9 @@ import "@xterm/xterm/css/xterm.css";
 // ── Config ──
 let AI_CODER_URL = localStorage.getItem("ai-coder-url") || "http://134.199.195.14:30000";
 let AI_VISION_URL = localStorage.getItem("ai-vision-url") || "http://134.199.195.14:8000";
+let AI_OMNIPARSER_URL = localStorage.getItem("ai-omniparser-url") || "http://localhost:8080";
+let AI_OMNIPARSER_ENDPOINT = localStorage.getItem("ai-omniparser-endpoint") || "/parse";
+let AI_OMNIPARSER_ENABLED = localStorage.getItem("ai-omniparser-enabled") === "true";
 let TELEGRAM_BOT_TOKEN = localStorage.getItem("telegram-bot-token") || "";
 let TELEGRAM_CHAT_ID = localStorage.getItem("telegram-chat-id") || "";
 let TELEGRAM_ENABLED = localStorage.getItem("telegram-enabled") === "true";
@@ -1740,6 +1743,147 @@ async function streamVisionChat(messages: VisionMessage[]): Promise<string> {
   return "";
 }
 
+// ── OmniParser caller ──
+// Posts the screenshot to the OmniParser HTTP service and returns its parsed
+// element list normalized to {label, type, content, x, y, bbox}. Tolerates the
+// common response shapes: {parsed_content_list:[…]}, {elements:[…]}, or a bare
+// array. Returns null on any error so callers can fall through gracefully.
+interface OmniElement {
+  label: string;
+  type: string;        // text | icon | button | input | …
+  content: string;     // OCR text if any
+  x: number;           // center pixel x
+  y: number;           // center pixel y
+  bbox: { x: number; y: number; width: number; height: number };
+  interactivity?: boolean;
+}
+
+async function runOmniParser(base64Png: string): Promise<OmniElement[] | null> {
+  if (!AI_OMNIPARSER_ENABLED) return null;
+  const baseUrl = AI_OMNIPARSER_URL.replace(/\/+$/, "");
+  const path = AI_OMNIPARSER_ENDPOINT.startsWith("/") ? AI_OMNIPARSER_ENDPOINT : `/${AI_OMNIPARSER_ENDPOINT}`;
+  const url1 = `${baseUrl}${path}`;
+  const url2 = `${baseUrl}/api${path}`;
+  const url3 = `${baseUrl}/run${path}`;
+
+  const payloadVariants: Array<Record<string, unknown>> = [
+    { data: [`data:image/png;base64,${base64Png}`, 0.05, 0.1, true, 640] }, // Gradio format
+    { image: base64Png, base64_image: base64Png },
+    { image_base64: base64Png },
+    { image: `data:image/png;base64,${base64Png}` },
+  ];
+
+  let lastErr: string | null = null;
+  for (const url of [url1, url2, url3]) {
+    for (const body of payloadVariants) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          lastErr = `${res.status} ${res.statusText}`;
+          continue;
+        }
+        const data = await res.json();
+        const elements = normalizeOmniResponse(data);
+        if (elements.length > 0) return elements;
+        // Empty list is valid (blank screen) — return it on the first 200 OK.
+        return elements;
+      } catch (e) {
+        lastErr = String(e);
+      }
+    }
+  }
+  console.warn(`OmniParser request failed: ${lastErr}`);
+  return null;
+}
+
+function normalizeOmniResponse(data: unknown): OmniElement[] {
+  // Unwrap Gradio {"data": [...]} wrapper
+  if (data && typeof data === "object" && "data" in data) {
+    const dArr = (data as any).data;
+    if (Array.isArray(dArr) && dArr.length > 0) {
+      if (Array.isArray(dArr[0]) || (dArr[0] && typeof dArr[0] === "object" && ("parsed_content_list" in dArr[0] || "elements" in dArr[0]))) {
+        data = dArr[0];
+      } else if (typeof dArr[0] === "string" && dArr[0].trim().startsWith("[")) {
+        try { data = JSON.parse(dArr[0]); } catch { data = dArr; }
+      } else {
+        data = dArr;
+      }
+    }
+  }
+
+  // Accept any of: array | {parsed_content_list} | {elements} | {result}
+  let raw: any[] = [];
+  if (Array.isArray(data)) {
+    raw = data;
+  } else if (data && typeof data === "object") {
+    const d = data as Record<string, unknown>;
+    if (Array.isArray(d.parsed_content_list)) raw = d.parsed_content_list as any[];
+    else if (Array.isArray(d.elements)) raw = d.elements as any[];
+    else if (Array.isArray(d.result)) raw = d.result as any[];
+    else if (Array.isArray(d.results)) raw = d.results as any[];
+    else if (Array.isArray((d as any).data)) raw = (d as any).data as any[];
+  }
+  if (raw.length === 0) return [];
+
+  const out: OmniElement[] = [];
+  for (const el of raw) {
+    if (!el || typeof el !== "object") continue;
+    const o = el as Record<string, unknown>;
+
+    // bbox can be {x,y,width,height} or [x1,y1,x2,y2] or {bbox:[…]}
+    let bbox: { x: number; y: number; width: number; height: number } | null = null;
+    const rawBbox = o.bbox ?? o.bounding_box ?? o.box ?? null;
+    if (Array.isArray(rawBbox) && rawBbox.length >= 4) {
+      const [x1, y1, x2, y2] = rawBbox.map((v) => Number(v));
+      if ([x1, y1, x2, y2].every(Number.isFinite)) {
+        // OmniParser usually returns normalized coords (0..1). If max <= 1.5, scale up later via screenshot size — but we don't have it here, so keep raw and let coder context describe ratios. We still convert to pixel-form when values look like pixels.
+        if (Math.max(x1, y1, x2, y2) <= 1.5) {
+          // normalized — pass through as relative; we cannot know image size here. Skip this entry's pixel x/y.
+          bbox = { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+        } else {
+          bbox = { x: Math.round(x1), y: Math.round(y1), width: Math.round(x2 - x1), height: Math.round(y2 - y1) };
+        }
+      }
+    } else if (rawBbox && typeof rawBbox === "object") {
+      const b = rawBbox as Record<string, unknown>;
+      const x = Number(b.x), y = Number(b.y), w = Number(b.width ?? b.w), h = Number(b.height ?? b.h);
+      if ([x, y, w, h].every(Number.isFinite)) bbox = { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
+    }
+
+    if (!bbox) continue;
+    const cx = Math.round(bbox.x + bbox.width / 2);
+    const cy = Math.round(bbox.y + bbox.height / 2);
+
+    out.push({
+      label: typeof o.label === "string" ? o.label : (typeof o.name === "string" ? o.name : ""),
+      type: typeof o.type === "string" ? o.type : (typeof o.element_type === "string" ? o.element_type : "element"),
+      content: typeof o.content === "string" ? o.content : (typeof o.text === "string" ? o.text : ""),
+      x: cx,
+      y: cy,
+      bbox,
+      interactivity: typeof o.interactivity === "boolean" ? o.interactivity : undefined,
+    });
+
+    if (out.length >= 400) break;
+  }
+  return out;
+}
+
+// Convert OmniParser elements into a compact textual block that the coder can
+// read alongside the vision model's JSON map.
+function formatOmniElementsForCoder(elements: OmniElement[]): string {
+  const lines: string[] = [];
+  for (const e of elements.slice(0, 200)) {
+    const txt = e.content || e.label || e.type;
+    lines.push(`- ${e.type}${e.interactivity === true ? "*" : ""} @(${e.x},${e.y}) ${e.bbox.width}x${e.bbox.height}: ${txt.replace(/\s+/g, " ").trim().slice(0, 120)}`);
+  }
+  return lines.join("\n");
+}
+
 async function captureScreen(): Promise<string | null> {
   try {
     // Hide the Catog window before capture so the workflow output panel
@@ -2381,6 +2525,12 @@ async function runVisionGuidedAgent(opts: {
       break;
     }
 
+    // 1a. Kick off OmniParser in parallel with the vision-model call when
+    //     enabled. Both work on the same frame, then we merge their outputs
+    //     and feed the combined map to the coder. OmniParser is a pure
+    //     additive signal — failures don't block the iteration.
+    const omniPromise = AI_OMNIPARSER_ENABLED ? runOmniParser(screenshot) : Promise.resolve(null);
+
     // 1. Vision model extracts coordinates as JSON (with retry logic).
     let perception: string = "";
     let visionSuccess = false;
@@ -2513,6 +2663,25 @@ async function runVisionGuidedAgent(opts: {
     }
 
     const universalVisionMap = enrichWithBootstrapTools(buildUniversalVisionMap(parsedVision, appContext || ""), osBoundsObj);
+
+    // 1b. Resolve OmniParser (started in parallel above). Merge into the map
+    //     under an `omniparser` key so the coder sees both signals.
+    let omniElements: OmniElement[] | null = null;
+    try {
+      omniElements = await omniPromise;
+    } catch {
+      omniElements = null;
+    }
+    if (omniElements && omniElements.length > 0) {
+      (universalVisionMap as any).omniparser = {
+        count: omniElements.length,
+        elements: omniElements.slice(0, 200),
+      };
+      log(`OmniParser: ${omniElements.length} elements parsed.`, "#a78bfa");
+    } else if (AI_OMNIPARSER_ENABLED) {
+      log("OmniParser returned no elements (or failed) — using vision map only.", "#f59e0b");
+    }
+
     const screenshotWidth = universalVisionMap?.screenshot?.width;
     const screenshotHeight = universalVisionMap?.screenshot?.height;
     const elementsCount = Array.isArray(universalVisionMap?.tools) ? universalVisionMap.tools.length : 0;
@@ -2581,10 +2750,16 @@ async function runVisionGuidedAgent(opts: {
     lastOsActiveWindowBounds = osActiveWindowBounds;
 
     // 3. Coder model decides tool calls using the coordinate map.
+    const omniBlock = (omniElements && omniElements.length > 0)
+      ? `OmniParser elements (OCR + element parser, complementary to vision tools[] — use these when vision missed a control or the text content matters):\n` +
+        formatOmniElementsForCoder(omniElements) + "\n\n"
+      : "";
+
     const coderUserContent =
       `User task: ${task}\n\n` +
       `Program + tools coordinate map (JSON from vision module — use these coordinates verbatim):\n` +
       "```json\n" + screenMapForCoder + "\n```\n\n" +
+      omniBlock +
       (osActiveWindowBounds
         ? `OS active window bounds (authoritative geometry from native API):\n${osActiveWindowBounds}\n\n`
         : "") +
@@ -3822,11 +3997,23 @@ async function handleSaveAi(): Promise<void> {
   const coderUrl = coderUrlEl.value.trim();
   const userVisionModel = visionModelEl.value.trim();
   const userCoderModel = coderModelEl.value.trim();
+  const omniUrlEl = document.querySelector("#ai-omniparser-url") as HTMLInputElement;
+  const omniEndpointEl = document.querySelector("#ai-omniparser-endpoint") as HTMLInputElement;
+  const omniEnabledEl = document.querySelector("#ai-omniparser-enabled") as HTMLInputElement;
+  const omniUrl = omniUrlEl.value.trim();
+  const omniEndpoint = omniEndpointEl.value.trim();
+  const omniEnabled = omniEnabledEl.checked;
   if (!visionUrl || !coderUrl) { alert("Both URLs are required."); return; }
   AI_VISION_URL = visionUrl;
   AI_CODER_URL = coderUrl;
+  AI_OMNIPARSER_URL = omniUrl;
+  AI_OMNIPARSER_ENDPOINT = omniEndpoint;
+  AI_OMNIPARSER_ENABLED = omniEnabled;
   localStorage.setItem("ai-vision-url", visionUrl);
   localStorage.setItem("ai-coder-url", coderUrl);
+  localStorage.setItem("ai-omniparser-url", omniUrl);
+  localStorage.setItem("ai-omniparser-endpoint", omniEndpoint);
+  localStorage.setItem("ai-omniparser-enabled", String(omniEnabled));
 
   const statusEl = document.querySelector("#ai-status") as HTMLDivElement;
   statusEl.innerHTML = "⏳ Testing connections...";
@@ -3939,8 +4126,25 @@ async function handleSaveAi(): Promise<void> {
   coderModelEl.value = finalCoderModel;
   visionModelEl.value = finalVisionModel;
 
+  let omniStatus = "";
+  if (omniEnabled) {
+    try {
+      const baseUrl = omniUrl.replace(/\/+$/, "");
+      const res = await fetch(`${baseUrl}/`).catch(() => fetch(baseUrl, { method: "HEAD" }));
+      if (res && (res.ok || res.status === 405 || res.status === 404)) {
+        omniStatus = `✅ OmniParser reachable`;
+      } else {
+        omniStatus = `❌ OmniParser returned ${res?.status || "error"}`;
+      }
+    } catch {
+      omniStatus = `❌ OmniParser unreachable`;
+    }
+  } else {
+    omniStatus = `⏸ OmniParser disabled`;
+  }
+
   const usingLine = `<small>Using: coder=${finalCoderModel} | vision=${finalVisionModel}</small>`;
-  statusEl.innerHTML = `${coderStatus}<br>${visionStatus}<br>${usingLine}`;
+  statusEl.innerHTML = `${coderStatus}<br>${visionStatus}<br>${omniStatus}<br>${usingLine}`;
   appendMessage("assistant", "AI configuration updated.");
 }
 
@@ -6336,6 +6540,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   if (savedVisionUrl) (document.querySelector("#ai-vision-url") as HTMLInputElement).value = savedVisionUrl;
   if (savedCoderModel) (document.querySelector("#ai-coder-model") as HTMLInputElement).value = savedCoderModel;
   if (savedVisionModel) (document.querySelector("#ai-vision-model") as HTMLInputElement).value = savedVisionModel;
+  (document.querySelector("#ai-omniparser-url") as HTMLInputElement).value = AI_OMNIPARSER_URL;
+  (document.querySelector("#ai-omniparser-endpoint") as HTMLInputElement).value = AI_OMNIPARSER_ENDPOINT;
+  (document.querySelector("#ai-omniparser-enabled") as HTMLInputElement).checked = AI_OMNIPARSER_ENABLED;
   (document.querySelector("#telegram-bot-token") as HTMLInputElement).value = TELEGRAM_BOT_TOKEN;
   (document.querySelector("#telegram-chat-id") as HTMLInputElement).value = TELEGRAM_CHAT_ID;
   (document.querySelector("#telegram-enabled") as HTMLInputElement).checked = TELEGRAM_ENABLED;
