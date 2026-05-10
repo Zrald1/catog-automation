@@ -119,7 +119,7 @@ vllm serve amd/Qwen3.5-35B-A3B-MXFP4 \
     --host 0.0.0.0 \
     --port 30000 \
     --quantization quark \
-    --gpu-memory-utilization 0.75 \
+    --gpu-memory-utilization 0.55 \
     --max-model-len 32768 \
     --tensor-parallel-size 1 \
     --enable-expert-parallel \
