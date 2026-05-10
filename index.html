@@ -112,6 +112,7 @@
             <button class="skill-btn" id="btn-aiz-skill">+ Add Skill</button>
             <button class="skill-btn" id="btn-import-skill">Import Skill</button>
             <button class="skill-btn" id="btn-export-skill">Export Skill</button>
+            <button class="skill-btn" id="btn-explore-tool" title="Self-Learning: launch a program, let the agent map every button and menu, save the profile so future workflows can use it automatically">🔍 Explore Tool</button>
           </div>
           <div id="skills-list" class="skills-list"></div>
         </div>
@@ -196,6 +197,51 @@
             </div>
             <button class="widget-save" id="save-export-skill">Export Skill</button>
             <div class="toast hidden" id="export-toast"></div>
+          </div>
+        </div>
+
+        <div id="explore-tool-widget" class="widget hidden">
+          <div class="widget-header">
+            <h3>🔍 Explore Tool — Self Learning</h3>
+            <button class="widget-close" id="close-explore-tool">&times;</button>
+          </div>
+          <div class="widget-body">
+            <p class="aiz-config-hint">
+              Pick a program. The agent will launch it, walk through every menu, tab, ribbon, and dialog, and record every button/control with its purpose. The profile is saved locally and injected into any workflow that targets the same program.
+            </p>
+            <div class="form-group">
+              <label for="explore-program-input">Program</label>
+              <input type="text" id="explore-program-input" placeholder="e.g. Microsoft Excel, Notepad, Google Chrome" autocomplete="off" />
+              <div class="aiz-program-list" id="explore-program-list"></div>
+            </div>
+            <div class="form-group">
+              <label for="explore-iterations">Exploration Steps (more = deeper map, slower)</label>
+              <input type="number" id="explore-iterations" value="20" min="5" max="60" />
+            </div>
+            <div class="explore-controls">
+              <button class="widget-save" id="explore-start-btn">Start Self-Learning</button>
+              <button class="evolve-btn" id="explore-stop-btn" hidden>⏹ Stop</button>
+            </div>
+            <div class="explore-status" id="explore-status" hidden>
+              <div class="explore-status-row">
+                <span class="explore-status-label">Status:</span>
+                <span class="explore-status-text" id="explore-status-text">Idle</span>
+              </div>
+              <div class="explore-status-row">
+                <span class="explore-status-label">Tools discovered:</span>
+                <span class="explore-status-text" id="explore-stat-tools">0</span>
+              </div>
+              <div class="explore-status-row">
+                <span class="explore-status-label">Iteration:</span>
+                <span class="explore-status-text" id="explore-stat-iter">0</span>
+              </div>
+            </div>
+            <div class="explore-log" id="explore-log"></div>
+            <div class="explore-profiles" id="explore-profiles">
+              <div class="evolve-ui-label">📚 Saved Program Profiles</div>
+              <div class="explore-profiles-list" id="explore-profiles-list"></div>
+            </div>
+            <div class="toast hidden" id="explore-toast"></div>
           </div>
         </div>
 

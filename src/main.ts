@@ -565,6 +565,257 @@ function evolveEndTask(): void {
   evolveCurrentCategory = "";
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXPLORE TOOL — Self Learning
+// Walks a target program and records every button, menu, tab, dialog with its
+// purpose. Saves a "program profile" keyed by program name. When a workflow
+// later targets the same program, the profile is injected as extra context so
+// the coder model already knows the layout.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const PROGRAM_PROFILES_KEY = "catog-program-profiles";
+
+interface ProgramTool {
+  name: string;
+  type: string;            // button | tab | menu_item | input | toolbar_icon | …
+  purpose: string;         // one-line description of what this control does
+  location: string;        // textual hint where to find it ("File menu → Save As")
+  shortcut?: string;       // keyboard shortcut if discovered
+}
+
+interface ProgramProfile {
+  programName: string;     // canonical name as the user typed it
+  programTitle?: string;   // window title detected during exploration
+  tools: ProgramTool[];
+  iterations: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface ProgramProfileStore {
+  profiles: Record<string, ProgramProfile>; // key: lowercased program name
+}
+
+function exploreLoadProfiles(): ProgramProfileStore {
+  try {
+    const raw = localStorage.getItem(PROGRAM_PROFILES_KEY);
+    if (!raw) return { profiles: {} };
+    const parsed = JSON.parse(raw) as ProgramProfileStore;
+    if (!parsed || typeof parsed !== "object" || !parsed.profiles) return { profiles: {} };
+    return parsed;
+  } catch {
+    return { profiles: {} };
+  }
+}
+
+function exploreSaveProfiles(store: ProgramProfileStore): void {
+  localStorage.setItem(PROGRAM_PROFILES_KEY, JSON.stringify(store));
+}
+
+function exploreGetProfile(programName: string): ProgramProfile | null {
+  const key = programName.trim().toLowerCase();
+  if (!key) return null;
+  const store = exploreLoadProfiles();
+  return store.profiles[key] || null;
+}
+
+function exploreUpsertProfile(profile: ProgramProfile): void {
+  const store = exploreLoadProfiles();
+  const key = profile.programName.trim().toLowerCase();
+  const existing = store.profiles[key];
+  if (existing) {
+    // Merge: dedupe by lowercase name, keep richer purpose strings.
+    const byName = new Map<string, ProgramTool>();
+    for (const t of existing.tools) byName.set(t.name.trim().toLowerCase(), t);
+    for (const t of profile.tools) {
+      const k = t.name.trim().toLowerCase();
+      const prev = byName.get(k);
+      if (!prev) {
+        byName.set(k, t);
+      } else {
+        byName.set(k, {
+          name: t.name || prev.name,
+          type: t.type || prev.type,
+          purpose: t.purpose.length > prev.purpose.length ? t.purpose : prev.purpose,
+          location: t.location || prev.location,
+          shortcut: t.shortcut || prev.shortcut,
+        });
+      }
+    }
+    profile = {
+      ...profile,
+      tools: Array.from(byName.values()),
+      iterations: existing.iterations + profile.iterations,
+      createdAt: existing.createdAt,
+      updatedAt: Date.now(),
+    };
+  }
+  store.profiles[key] = profile;
+  exploreSaveProfiles(store);
+}
+
+function exploreDeleteProfile(programName: string): void {
+  const store = exploreLoadProfiles();
+  delete store.profiles[programName.trim().toLowerCase()];
+  exploreSaveProfiles(store);
+}
+
+// Returns formatted context to inject into a coder prompt for a given program.
+function exploreGetProfileContext(programName: string): string | null {
+  const p = exploreGetProfile(programName);
+  if (!p || p.tools.length === 0) return null;
+  const lines = p.tools.slice(0, 60).map((t) => {
+    const sc = t.shortcut ? ` [${t.shortcut}]` : "";
+    const loc = t.location ? ` (${t.location})` : "";
+    return `- ${t.name}${sc}: ${t.purpose}${loc}`;
+  });
+  return `[Self-Learning Profile: ${p.programName}]\nKnown controls and what they do:\n${lines.join("\n")}`;
+}
+
+// ── Exploration runner ──
+let exploreRunning = false;
+let exploreStopFlag = false;
+
+interface ExploreOpts {
+  programName: string;
+  iterations: number;
+  onLog: (msg: string, kind?: "info" | "tool" | "iter" | "warn" | "done") => void;
+  onStat: (toolsCount: number, iter: number) => void;
+}
+
+async function runProgramExploration(opts: ExploreOpts): Promise<ProgramProfile> {
+  const { programName, iterations, onLog, onStat } = opts;
+  const discovered: ProgramTool[] = [];
+  let detectedTitle = "";
+
+  exploreRunning = true;
+  exploreStopFlag = false;
+  onLog(`Launching "${programName}"…`, "info");
+
+  // 1. Make sure the program is running and focused.
+  try {
+    await invoke("launch_application", { name: programName });
+    await new Promise((r) => setTimeout(r, 1500));
+  } catch (e) {
+    onLog(`launch_application failed: ${String(e)} — continuing anyway in case it's already open.`, "warn");
+  }
+
+  // 2. Drive the vision+coder loop with an exploration task.
+  const task =
+    `EXPLORATION MODE: You are mapping the program "${programName}" so future automations can use it.\n` +
+    `For each iteration:\n` +
+    `  1. Look at the current screen (the vision map gives you tools/text/words/coordinates).\n` +
+    `  2. Pick ONE menu, tab, ribbon, or panel that you have not opened yet and click it (use long_press_at for nested menus, or press_key_combo for shortcuts like alt+f, alt+e, etc.).\n` +
+    `  3. After it opens, the next iteration will record what's inside.\n` +
+    `Strategy: open every File / Edit / View / Insert / Format / Tools / Help-style menu, and every tab on a ribbon. Then close any modal so other menus stay reachable.\n` +
+    `IMPORTANT: do NOT close the program. Do NOT type random text. Just navigate.\n` +
+    `When you have visited all top-level menus and tabs, output exactly: TASK_DONE: exploration complete.`;
+
+  let iterCount = 0;
+
+  // Patch onLog to also drive the live tool counter as we accumulate from the
+  // vision map written by the agent loop. We extract tool entries from each
+  // streaming log line that looks like a JSON snippet.
+  const wrappedLog = (msg: string, _color?: string) => {
+    if (exploreStopFlag) return;
+    const lower = msg.toLowerCase();
+    if (lower.startsWith("iteration ") || lower.startsWith("vision iteration") || lower.startsWith("step ")) {
+      iterCount++;
+      onStat(discovered.length, iterCount);
+      onLog(msg, "iter");
+    } else if (lower.includes("tool_call") || lower.includes("click_at") || lower.includes("press_key") || lower.includes("type_text")) {
+      onLog(msg, "tool");
+    } else {
+      onLog(msg);
+    }
+  };
+
+  try {
+    await runVisionGuidedAgent({
+      task,
+      appContext: programName,
+      maxIterations: Math.max(5, Math.min(iterations, 60)),
+      log: wrappedLog,
+      isStopped: () => exploreStopFlag,
+    });
+  } catch (e) {
+    onLog(`Vision agent error: ${String(e)}`, "warn");
+  }
+
+  // 3. After the navigation loop, take one final screenshot per top-level menu
+  //    and ask the vision model to enumerate every control with its function.
+  //    We do this here once at the end so we can ask explicitly for purposes,
+  //    not just coordinates.
+  if (!exploreStopFlag) {
+    onLog("Summarizing discovered controls — asking vision model for tool descriptions…", "info");
+    try {
+      const screenshot = await captureScreen();
+      if (screenshot) {
+        const summarySystem =
+          "You are a software-tools cataloguer. From the screenshot, list every visible interactive control (button, menu item, tab, ribbon icon, toolbar icon, input, checkbox, dropdown). " +
+          "For each, infer its FUNCTION based on its label, icon, and surrounding context — not just its name. Return EXACTLY ONE JSON object, no markdown:\n" +
+          "{ \"program_title\": string, \"tools\": [ { \"name\": string, \"type\": string, \"purpose\": string, \"location\": string, \"shortcut\": string|null } ] }\n" +
+          "Rules: name = visible label or icon meaning; type = button|menu_item|tab|toolbar_icon|input|checkbox|dropdown|other; purpose = one short sentence saying what clicking/using it does; location = where in the UI to find it (e.g. 'Home tab', 'File menu'); shortcut = visible accelerator like 'Ctrl+S' or null.";
+        const summary = await streamVisionChat([
+          { role: "system", content: summarySystem },
+          {
+            role: "user",
+            content: [
+              { type: "image_url", image_url: { url: `data:image/png;base64,${screenshot}` } },
+              { type: "text", text: `The program is "${programName}". Catalogue every visible control with its function.` },
+            ],
+          },
+        ]);
+        try {
+          const parsed = extractJsonFromResponse(summary);
+          if (parsed && typeof parsed === "object") {
+            if (typeof parsed.program_title === "string") detectedTitle = parsed.program_title.trim();
+            const toolsArr = Array.isArray(parsed.tools) ? parsed.tools : [];
+            for (const t of toolsArr) {
+              if (!t || typeof t !== "object") continue;
+              const name = typeof (t as any).name === "string" ? (t as any).name.trim() : "";
+              if (!name) continue;
+              discovered.push({
+                name,
+                type: typeof (t as any).type === "string" ? (t as any).type : "control",
+                purpose: typeof (t as any).purpose === "string" ? (t as any).purpose : "",
+                location: typeof (t as any).location === "string" ? (t as any).location : "",
+                shortcut: typeof (t as any).shortcut === "string" && (t as any).shortcut ? (t as any).shortcut : undefined,
+              });
+            }
+            onLog(`Catalogued ${toolsArr.length} controls from final screen.`, "tool");
+          }
+        } catch (parseErr) {
+          onLog(`Could not parse cataloguer JSON: ${String(parseErr)}`, "warn");
+        }
+      }
+    } catch (e) {
+      onLog(`Cataloguer pass failed: ${String(e)}`, "warn");
+    }
+  }
+
+  exploreRunning = false;
+  onStat(discovered.length, iterCount);
+
+  const profile: ProgramProfile = {
+    programName: programName.trim(),
+    programTitle: detectedTitle || undefined,
+    tools: discovered,
+    iterations: iterCount,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  if (discovered.length > 0) {
+    exploreUpsertProfile(profile);
+    onLog(`Saved profile for "${profile.programName}" with ${profile.tools.length} controls.`, "done");
+  } else {
+    onLog(`No controls were catalogued — profile not saved.`, "warn");
+  }
+
+  return profile;
+}
+
 // ── Workflow Execution Context (Isolation) ──
 interface WorkflowExecutionContext {
   id: string;
@@ -923,12 +1174,35 @@ function buildEvolvedSystemPrompt(userMessage: string): string {
     prompt += `\n\n**Self-Evolving Memory (proven steps from past successful runs):**\n${provenContext}\nUse these proven steps as guidance but adapt to the current screen state. Only follow steps that match the current UI.`;
   }
 
+  // Inject Self-Learning program profile if any saved profile name appears in
+  // the user's request — gives the coder a head-start with control names,
+  // shortcuts, and what each one does for this program.
+  const profileContext = exploreFindProfileForMessage(userMessage);
+  if (profileContext) {
+    prompt += `\n\n**Self-Learning Program Knowledge:**\n${profileContext}\nPrefer these known controls and shortcuts over guessing. The coordinates still come from the live vision map per iteration.`;
+  }
+
   // Inject 2-sentence UI context if available
   if (evolveLastUISummary) {
     prompt += `\n\n**Current UI State (2-sentence snapshot):**\n${evolveLastUISummary}`;
   }
 
   return prompt;
+}
+
+// Match the user's message against saved program profiles. Returns the most
+// specific (longest-name) match's formatted context, or null.
+function exploreFindProfileForMessage(userMessage: string): string | null {
+  const store = exploreLoadProfiles();
+  const names = Object.keys(store.profiles);
+  if (names.length === 0) return null;
+  const msg = userMessage.toLowerCase();
+  let bestKey = "";
+  for (const key of names) {
+    if (msg.includes(key) && key.length > bestKey.length) bestKey = key;
+  }
+  if (!bestKey) return null;
+  return exploreGetProfileContext(store.profiles[bestKey].programName);
 }
 
 // ── Helpers ──
@@ -3798,6 +4072,190 @@ function handleExportSkill(): void {
   closeWidgetFn(exportSkillWidget);
 }
 
+// ── Explore Tool UI helpers ──
+let exploreCachedApps: { name: string; sub?: string }[] = [];
+
+async function primeExploreProgramList(): Promise<void> {
+  if (exploreCachedApps.length > 0) {
+    renderExploreProgramListFiltered("");
+    return;
+  }
+  try {
+    const installed = await invoke<InstalledApplication[]>("get_installed_applications").catch(() => null);
+    if (installed && installed.length > 0) {
+      exploreCachedApps = installed.map((a) => ({ name: a.name }));
+    } else {
+      const running = await invoke<RunningProgram[]>("get_running_programs");
+      exploreCachedApps = running.map((p) => ({
+        name: p.name,
+        sub: p.title && p.title !== p.name ? p.title : undefined,
+      }));
+    }
+  } catch {
+    exploreCachedApps = [];
+  }
+  renderExploreProgramListFiltered("");
+}
+
+function renderExploreProgramListFiltered(query: string): void {
+  const listEl = document.getElementById("explore-program-list") as HTMLDivElement | null;
+  if (!listEl) return;
+  const q = query.trim().toLowerCase();
+  const items = q
+    ? exploreCachedApps.filter((a) => a.name.toLowerCase().includes(q) || (a.sub && a.sub.toLowerCase().includes(q)))
+    : exploreCachedApps.slice(0, 30);
+  listEl.innerHTML = "";
+  if (items.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "aiz-program-empty";
+    empty.textContent = exploreCachedApps.length === 0 ? "Loading programs…" : "No matches";
+    listEl.appendChild(empty);
+    return;
+  }
+  for (const app of items) {
+    const item = document.createElement("div");
+    item.className = "aiz-program-item";
+    item.dataset.name = app.name;
+    const name = document.createElement("div");
+    name.className = "aiz-program-item-name";
+    name.textContent = app.name;
+    item.appendChild(name);
+    if (app.sub) {
+      const sub = document.createElement("div");
+      sub.className = "aiz-program-item-sub";
+      sub.textContent = app.sub;
+      item.appendChild(sub);
+    }
+    item.addEventListener("click", () => {
+      const input = document.getElementById("explore-program-input") as HTMLInputElement | null;
+      if (input) input.value = app.name;
+      // visually mark
+      listEl.querySelectorAll(".aiz-program-item").forEach((el) => el.classList.remove("selected"));
+      item.classList.add("selected");
+    });
+    listEl.appendChild(item);
+  }
+}
+
+function renderExploreProfilesList(): void {
+  const listEl = document.getElementById("explore-profiles-list");
+  if (!listEl) return;
+  const store = exploreLoadProfiles();
+  const profiles = Object.values(store.profiles);
+  listEl.innerHTML = "";
+  if (profiles.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "explore-profiles-empty";
+    empty.textContent = "No saved profiles yet. Pick a program above and click Start Self-Learning.";
+    listEl.appendChild(empty);
+    return;
+  }
+  profiles.sort((a, b) => b.updatedAt - a.updatedAt);
+  for (const p of profiles) {
+    const row = document.createElement("div");
+    row.className = "explore-profile-item";
+    const info = document.createElement("div");
+    info.className = "explore-profile-info";
+    const name = document.createElement("div");
+    name.className = "explore-profile-name";
+    name.textContent = p.programName;
+    const meta = document.createElement("div");
+    meta.className = "explore-profile-meta";
+    const when = new Date(p.updatedAt).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+    meta.textContent = `${p.tools.length} controls · ${p.iterations} iterations · ${when}`;
+    info.appendChild(name);
+    info.appendChild(meta);
+    const actions = document.createElement("div");
+    actions.className = "explore-profile-actions";
+    const reExploreBtn = document.createElement("button");
+    reExploreBtn.textContent = "Re-explore";
+    reExploreBtn.addEventListener("click", () => {
+      const input = document.getElementById("explore-program-input") as HTMLInputElement | null;
+      if (input) input.value = p.programName;
+    });
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "danger";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.addEventListener("click", () => {
+      exploreDeleteProfile(p.programName);
+      renderExploreProfilesList();
+    });
+    actions.appendChild(reExploreBtn);
+    actions.appendChild(deleteBtn);
+    row.appendChild(info);
+    row.appendChild(actions);
+    listEl.appendChild(row);
+  }
+}
+
+function exploreLogAppend(msg: string, kind: "info" | "tool" | "iter" | "warn" | "done" = "info"): void {
+  const logEl = document.getElementById("explore-log");
+  if (!logEl) return;
+  const entry = document.createElement("div");
+  entry.className = `explore-entry ${kind}`;
+  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  entry.textContent = `[${time}] ${msg}`;
+  logEl.appendChild(entry);
+  logEl.scrollTop = logEl.scrollHeight;
+  while (logEl.children.length > 200) logEl.removeChild(logEl.children[0]);
+}
+
+function exploreSetStatusUI(text: string, toolsCount: number, iter: number): void {
+  const statusBox = document.getElementById("explore-status");
+  if (statusBox) statusBox.removeAttribute("hidden");
+  const statusText = document.getElementById("explore-status-text");
+  if (statusText) statusText.textContent = text;
+  const toolsEl = document.getElementById("explore-stat-tools");
+  if (toolsEl) toolsEl.textContent = String(toolsCount);
+  const iterEl = document.getElementById("explore-stat-iter");
+  if (iterEl) iterEl.textContent = String(iter);
+}
+
+async function handleExploreStart(): Promise<void> {
+  if (exploreRunning) {
+    exploreLogAppend("Exploration already running.", "warn");
+    return;
+  }
+  const input = document.getElementById("explore-program-input") as HTMLInputElement | null;
+  const iterInput = document.getElementById("explore-iterations") as HTMLInputElement | null;
+  const startBtn = document.getElementById("explore-start-btn") as HTMLButtonElement | null;
+  const stopBtn = document.getElementById("explore-stop-btn") as HTMLButtonElement | null;
+
+  const programName = (input?.value || "").trim();
+  if (!programName) {
+    exploreLogAppend("Pick a program first.", "warn");
+    return;
+  }
+  const iterations = Math.max(5, Math.min(60, Number(iterInput?.value) || 20));
+
+  if (startBtn) startBtn.disabled = true;
+  if (stopBtn) stopBtn.hidden = false;
+  exploreSetStatusUI(`Exploring "${programName}"…`, 0, 0);
+  exploreLogAppend(`Self-Learning started for "${programName}" (${iterations} iterations max).`, "info");
+
+  try {
+    const profile = await runProgramExploration({
+      programName,
+      iterations,
+      onLog: (msg, kind) => exploreLogAppend(msg, kind),
+      onStat: (t, i) => exploreSetStatusUI(`Exploring "${programName}"…`, t, i),
+    });
+    exploreSetStatusUI(
+      profile.tools.length > 0 ? "Done — profile saved" : "Done — nothing learned",
+      profile.tools.length,
+      profile.iterations,
+    );
+    renderExploreProfilesList();
+  } catch (e) {
+    exploreLogAppend(`Exploration failed: ${String(e)}`, "warn");
+  } finally {
+    if (startBtn) startBtn.disabled = false;
+    if (stopBtn) stopBtn.hidden = true;
+    exploreRunning = false;
+    exploreStopFlag = false;
+  }
+}
+
 // ── Terminal ──
 export function enterTerminalMode(): void {
   appShellEl.classList.add("terminal-mode");
@@ -4239,51 +4697,25 @@ function setupAizSkillBuilder(): void {
         saveNodeConfig(node);
       });
 
-      // Normalize legacy values: "true" → "vision", "false" → "text"
-      if (node.config.visionMode === "true") node.config.visionMode = "vision";
-      else if (node.config.visionMode === "false" || !node.config.visionMode) node.config.visionMode = "text";
+      // Force the agent mode to "text" — this is the coder-driven path that
+      // also calls the vision model when the coder asks for a screenshot, and
+      // is the only mode we expose in the UI now (labeled "Vision + Coder").
+      // Legacy saved values are normalized to "text" so old skills keep working.
+      node.config.visionMode = "text";
+      saveNodeConfig(node);
 
-      const currentMode = node.config.visionMode;
       const visionGroup = document.createElement("div");
       visionGroup.className = "form-group";
       visionGroup.innerHTML = `
         <label>Agent Mode</label>
         <select id="aiz-config-vision-mode">
-          <option value="text" ${currentMode === "text" ? "selected" : ""}>Text Only (coder model only)</option>
-          <option value="vision" ${currentMode === "vision" ? "selected" : ""}>Vision Only (vision model decides + acts)</option>
-          <option value="vision_coder" ${currentMode === "vision_coder" ? "selected" : ""}>Vision + Coder (vision sees → coder decides)</option>
+          <option value="text" selected>Vision + Coder</option>
         </select>
         <p class="aiz-config-hint">
-          <strong>Vision + Coder</strong> uses the vision model to describe the screen each iteration,
-          then the coder model picks the next tool calls and executes them.
+          <strong>Vision + Coder</strong> uses the coder model to plan each step and the vision model to read the screen when a screenshot is taken.
         </p>
       `;
       configBody.appendChild(visionGroup);
-
-      const visionSel = visionGroup.querySelector("select")!;
-      const iterUsedBy = (mode: string) => mode === "vision" || mode === "vision_coder";
-      visionSel.addEventListener("change", () => {
-        const v = (visionSel as HTMLSelectElement).value;
-        node.config.visionMode = v;
-        saveNodeConfig(node);
-        const iterInput = document.getElementById("aiz-config-vision-iterations") as HTMLInputElement;
-        const visible = iterUsedBy(v);
-        if (iterInput) iterInput.style.display = visible ? "" : "none";
-        const iterLabel = iterInput?.parentElement?.querySelector("label") as HTMLElement | null;
-        if (iterLabel) iterLabel.style.display = visible ? "" : "none";
-      });
-
-      const iterGroup = document.createElement("div");
-      iterGroup.className = "form-group";
-      const iterVisible = iterUsedBy(currentMode);
-      iterGroup.innerHTML = `<label style="${iterVisible ? "" : "display:none"}">Vision Iterations</label><input type="number" id="aiz-config-vision-iterations" value="${node.config.visionIterations || "10"}" min="1" max="50" placeholder="10" style="${iterVisible ? "" : "display:none"}" />`;
-      configBody.appendChild(iterGroup);
-
-      const iterInput = iterGroup.querySelector("input")!;
-      iterInput.addEventListener("input", () => {
-        node.config.visionIterations = (iterInput as HTMLInputElement).value;
-        saveNodeConfig(node);
-      });
 
     } else if (node.type === "save") {
       // Save file config
@@ -5996,6 +6428,39 @@ window.addEventListener("DOMContentLoaded", async () => {
   closeExportSkill.addEventListener("click", () => { closeWidgetFn(exportSkillWidget); exportPreview.classList.add("hidden"); exportSkillSelect.value = ""; });
   saveImportSkill.addEventListener("click", handleImportSkill);
   saveExportSkill.addEventListener("click", handleExportSkill);
+
+  // ── Explore Tool (Self-Learning) wiring ──
+  const exploreWidget = document.getElementById("explore-tool-widget") as HTMLDivElement | null;
+  const btnExplore = document.getElementById("btn-explore-tool");
+  const closeExplore = document.getElementById("close-explore-tool");
+  if (exploreWidget && btnExplore) {
+    btnExplore.addEventListener("click", () => {
+      renderExploreProfilesList();
+      openWidget(exploreWidget);
+      void primeExploreProgramList();
+    });
+  }
+  if (exploreWidget && closeExplore) {
+    closeExplore.addEventListener("click", () => closeWidgetFn(exploreWidget));
+  }
+
+  const exploreInput = document.getElementById("explore-program-input") as HTMLInputElement | null;
+  const exploreList = document.getElementById("explore-program-list") as HTMLDivElement | null;
+  if (exploreInput && exploreList) {
+    exploreInput.addEventListener("input", () => renderExploreProgramListFiltered(exploreInput.value));
+  }
+
+  const exploreStartBtn = document.getElementById("explore-start-btn") as HTMLButtonElement | null;
+  const exploreStopBtn = document.getElementById("explore-stop-btn") as HTMLButtonElement | null;
+  if (exploreStartBtn) {
+    exploreStartBtn.addEventListener("click", () => { void handleExploreStart(); });
+  }
+  if (exploreStopBtn) {
+    exploreStopBtn.addEventListener("click", () => {
+      exploreStopFlag = true;
+      exploreLogAppend("Stop requested — finishing current iteration…", "warn");
+    });
+  }
 
   // Import drag and drop
   importDropZone.addEventListener("click", () => importSkillFile.click());
