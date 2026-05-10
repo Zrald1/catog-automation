@@ -3363,6 +3363,55 @@ body {
   color: var(--text-primary);
 }
 
+.evolve-grade {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.06);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.evolve-grade[hidden] {
+  display: none;
+}
+
+.evolve-grade-task {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+  word-break: break-word;
+}
+
+.evolve-grade-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.evolve-grade-btn.correct {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #22c55e;
+}
+
+.evolve-grade-btn.correct:hover {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+.evolve-grade-btn.incorrect {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
+.evolve-grade-btn.incorrect:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .msg {

@@ -161,6 +161,14 @@ let evolveCurrentTask = "";
 let evolveCurrentCategory = "";
 let evolveLastUISummary = "";
 
+// Pending run waiting for human grade (Correct / Incorrect)
+interface EvolvePendingRun {
+  taskDescription: string;
+  category: string;
+  steps: EvolveStep[];
+}
+let evolvePendingRun: EvolvePendingRun | null = null;
+
 // ── Task Classifier ──
 // Extracts normalized keywords from user request to create a task category.
 function evolveClassifyTask(userMessage: string): { category: string; keywords: string[] } {
@@ -232,26 +240,49 @@ function sanitizeArgsForMemory(args: Record<string, unknown>): Record<string, un
   return sanitized;
 }
 
-// ── Karpathy Ratchet: Commit or Revert ──
-// After a task completes, evaluate whether the recorded steps are better
-// than the best existing sequence for this category.
-function evolveRatchetCommit(taskDescription: string, category: string): void {
-  if (!evolveEnabled || evolveCurrentSteps.length === 0) return;
-
-  const workingSteps = evolveCurrentSteps.filter(s => s.success);
-  if (workingSteps.length === 0) {
-    evolveRatchetLog("revert", `No working steps for "${category}" — discarded.`);
+// ── Stage a run for human grading ──
+// After a task completes we no longer auto-commit. We stash the run and reveal
+// the Correct / Incorrect buttons in the Self-Evolving panel. The human grade
+// is the source of truth for whether a sequence enters memory.
+function evolveStageRunForGrading(taskDescription: string, category: string): void {
+  if (!evolveEnabled || evolveCurrentSteps.length === 0) {
     evolveCurrentSteps = [];
+    evolveSetGradeUI(null);
     return;
   }
 
-  const successRate = workingSteps.length / evolveCurrentSteps.length;
+  evolvePendingRun = {
+    taskDescription: taskDescription.substring(0, 200),
+    category,
+    steps: evolveCurrentSteps.slice(0, EVOLVE_MAX_STEPS_PER_SEQ),
+  };
+  evolveCurrentSteps = [];
+  evolveSetGradeUI(evolvePendingRun);
+  evolveRatchetLog("neutral", `Awaiting grade for "${category}" (${evolvePendingRun.steps.length} steps).`);
+}
+
+// User clicked Correct or Incorrect on the staged run.
+function evolveApplyHumanGrade(correct: boolean): void {
+  if (!evolvePendingRun) return;
+  const { taskDescription, category, steps } = evolvePendingRun;
+
+  if (!correct) {
+    evolveRatchetLog("revert", `❌ User marked incorrect — discarded "${category}" (${steps.length} steps).`);
+    evolvePendingRun = null;
+    evolveSetGradeUI(null);
+    evolveSaveMemory();
+    evolveUpdateUI();
+    return;
+  }
+
+  // Correct: commit the sequence with a perfect human-graded success rate.
+  // Human grade overrides the per-step tool-call success heuristic.
   const newSequence: EvolveSequence = {
     id: `seq-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    taskDescription: taskDescription.substring(0, 200),
+    taskDescription,
     taskKeywords: evolveClassifyTask(taskDescription).keywords,
-    steps: workingSteps.slice(0, EVOLVE_MAX_STEPS_PER_SEQ),
-    successRate,
+    steps,
+    successRate: 1,
     totalRuns: 1,
     lastUsed: Date.now(),
     createdAt: Date.now(),
@@ -260,47 +291,52 @@ function evolveRatchetCommit(taskDescription: string, category: string): void {
   if (!evolveMemory.categories[category]) {
     evolveMemory.categories[category] = [];
   }
-
   const existing = evolveMemory.categories[category];
+  existing.push(newSequence);
+  evolveMemory.totalStepsLearned += steps.length;
 
-  // Ratchet: compare against best existing sequence
-  const bestExisting = existing.length > 0
-    ? existing.reduce((best, seq) => seq.successRate > best.successRate ? seq : best)
-    : null;
-
-  if (!bestExisting || successRate >= bestExisting.successRate) {
-    // New sequence is equal or better — commit
-    existing.push(newSequence);
-    evolveMemory.totalStepsLearned += workingSteps.length;
-
-    // Prune: keep only top N sequences per category, ranked by success rate
-    if (existing.length > EVOLVE_MAX_SEQUENCES_PER_CAT) {
-      existing.sort((a, b) => b.successRate - a.successRate || b.lastUsed - a.lastUsed);
-      existing.splice(EVOLVE_MAX_SEQUENCES_PER_CAT);
-    }
-
-    // Prune categories
-    const categoryKeys = Object.keys(evolveMemory.categories);
-    if (categoryKeys.length > EVOLVE_MAX_CATEGORIES) {
-      // Remove oldest, least-used categories
-      const sorted = categoryKeys.map(k => ({
-        key: k,
-        lastUsed: Math.max(...evolveMemory.categories[k].map(s => s.lastUsed)),
-      })).sort((a, b) => a.lastUsed - b.lastUsed);
-      for (let i = 0; i < sorted.length - EVOLVE_MAX_CATEGORIES; i++) {
-        delete evolveMemory.categories[sorted[i].key];
-      }
-    }
-
-    evolveRatchetLog("commit", `✅ Committed ${workingSteps.length} steps for "${category}" (${(successRate * 100).toFixed(0)}% success)`);
-  } else {
-    // Existing is better — revert (don't store)
-    evolveRatchetLog("revert", `↩ Reverted: existing "${category}" sequence is better (${(bestExisting.successRate * 100).toFixed(0)}% > ${(successRate * 100).toFixed(0)}%)`);
+  // Prune: keep only top N sequences per category, prefer human-graded (rate 1) and recent.
+  if (existing.length > EVOLVE_MAX_SEQUENCES_PER_CAT) {
+    existing.sort((a, b) => b.successRate - a.successRate || b.lastUsed - a.lastUsed);
+    existing.splice(EVOLVE_MAX_SEQUENCES_PER_CAT);
   }
 
+  // Prune categories
+  const categoryKeys = Object.keys(evolveMemory.categories);
+  if (categoryKeys.length > EVOLVE_MAX_CATEGORIES) {
+    const sorted = categoryKeys.map(k => ({
+      key: k,
+      lastUsed: Math.max(...evolveMemory.categories[k].map(s => s.lastUsed)),
+    })).sort((a, b) => a.lastUsed - b.lastUsed);
+    for (let i = 0; i < sorted.length - EVOLVE_MAX_CATEGORIES; i++) {
+      delete evolveMemory.categories[sorted[i].key];
+    }
+  }
+
+  evolveRatchetLog("commit", `✅ User graded correct — committed ${steps.length} steps for "${category}".`);
+  evolvePendingRun = null;
+  evolveSetGradeUI(null);
   evolveSaveMemory();
-  evolveCurrentSteps = [];
   evolveUpdateUI();
+}
+
+// Show / hide the Grade Last Run panel.
+function evolveSetGradeUI(pending: EvolvePendingRun | null): void {
+  const grade = document.getElementById("evolve-grade") as HTMLElement | null;
+  const taskEl = document.getElementById("evolve-grade-task");
+  if (!grade) return;
+  if (!pending) {
+    grade.hidden = true;
+    if (taskEl) taskEl.textContent = "";
+    return;
+  }
+  grade.hidden = false;
+  if (taskEl) {
+    const preview = pending.taskDescription.length > 80
+      ? pending.taskDescription.substring(0, 80) + "…"
+      : pending.taskDescription;
+    taskEl.textContent = `“${preview}” — ${pending.steps.length} steps`;
+  }
 }
 
 // ── Retrieve Best Steps for Task ──
@@ -458,8 +494,8 @@ function evolveBeginTask(userMessage: string): void {
 
 function evolveEndTask(): void {
   if (!evolveEnabled || !evolveCurrentTask) return;
-  evolveRatchetCommit(evolveCurrentTask, evolveCurrentCategory);
-  evolveSetStatus("idle", "Idle — waiting for task");
+  evolveStageRunForGrading(evolveCurrentTask, evolveCurrentCategory);
+  evolveSetStatus("idle", "Awaiting your grade — Correct or Incorrect?");
   evolveCurrentTask = "";
   evolveCurrentCategory = "";
 }
@@ -1669,9 +1705,11 @@ async function runVisionGuidedAgent(opts: {
   };
 
   const visionSystem =
-    "You are a UNIVERSAL UI COORDINATE MAPPER for desktop automation.\n" +
+    "You are a UNIVERSAL UI COORDINATE + TEXT MAPPER for desktop automation.\n" +
     "Return EXACTLY ONE valid JSON object and nothing else. No markdown, no prose, no code fences.\n\n" +
-    "Measure from screenshot top-left (0,0). Coordinates must be integer pixels inside image bounds.\n\n" +
+    "Measure from screenshot top-left (0,0). Coordinates must be integer pixels inside image bounds.\n" +
+    "Bounding boxes use {x, y, width, height} where (x, y) is the top-left corner.\n" +
+    "Center coordinates {x, y} are the click center of the element.\n\n" +
     "Required output schema:\n" +
     "{\n" +
     "  \"program\": { \"name\": string|null, \"title\": string|null },\n" +
@@ -1681,23 +1719,43 @@ async function runVisionGuidedAgent(opts: {
     "    \"focused\": boolean|null\n" +
     "  },\n" +
     "  \"tools\": [\n" +
-    "    { \"name\": string, \"x\": number, \"y\": number, \"type\": string, \"enabled\": boolean, \"visible\": boolean }\n" +
+    "    { \"name\": string, \"x\": number, \"y\": number, \"width\": number|null, \"height\": number|null, \"type\": string, \"enabled\": boolean, \"visible\": boolean }\n" +
+    "  ],\n" +
+    "  \"text_blocks\": [\n" +
+    "    { \"text\": string, \"x\": number, \"y\": number, \"width\": number, \"height\": number, \"role\": string }\n" +
+    "  ],\n" +
+    "  \"sentences\": [\n" +
+    "    { \"text\": string, \"x\": number, \"y\": number, \"width\": number, \"height\": number }\n" +
+    "  ],\n" +
+    "  \"words\": [\n" +
+    "    { \"text\": string, \"x\": number, \"y\": number, \"width\": number, \"height\": number }\n" +
+    "  ],\n" +
+    "  \"columns\": [\n" +
+    "    { \"name\": string|null, \"index\": number, \"x\": number, \"y\": number, \"width\": number, \"height\": number }\n" +
+    "  ],\n" +
+    "  \"rows\": [\n" +
+    "    { \"index\": number, \"x\": number, \"y\": number, \"width\": number, \"height\": number, \"cells\": [string] }\n" +
     "  ]\n" +
     "}\n\n" +
-    "Rules:\n" +
-    "- tools[] is universal for any program (Word, browser, explorer, etc.).\n" +
-    "- IMPORTANT: extract coordinates ONLY from the active target program window named in the user request; ignore other windows/background UI.\n" +
-    "- Return direct coordinate/content values from the selected program window only; do not describe actions or choose a solution.\n" +
-    "- Include actionable controls first (home tab, new file, save, search, menu, buttons, inputs, toolbar icons).\n" +
-    "- Limit tools[] to at most 120 items.\n" +
-    "- If uncertain, set nullable fields to null, but still return valid JSON object.";
+    "Extraction rules — capture ALL of the program's visible details so the coder has complete context:\n" +
+    "- tools[] : every interactive control (buttons, tabs, menu items, toolbar icons, checkboxes, radio buttons, dropdowns, sliders, inputs/textfields, links, scrollbars, titlebar buttons). Name them by their visible label or icon meaning.\n" +
+    "- text_blocks[] : every visible block of static text (headings, paragraphs, labels, status bars, tooltips). role can be: heading | paragraph | label | caption | status | tooltip | menu_text | list_item.\n" +
+    "- sentences[] : split paragraphs into individual sentences with their own bounding boxes. One entry per sentence visible on screen.\n" +
+    "- words[] : every visible word with its bounding box. Treat each token as one entry. This is the OCR-level granularity — include EVERY word the screen shows in the active window.\n" +
+    "- columns[] / rows[] : if the active window contains a table, list view, grid, spreadsheet, or column layout (file explorer, mail list, dataset, code editor with line numbers), extract every column header and every row with cell text. Use index 0-based.\n" +
+    "- IMPORTANT: extract ONLY from the active target program window named in the user request; ignore other windows / background UI / desktop wallpaper.\n" +
+    "- Be exhaustive. The coder model relies on this map for every click, type, and read decision — missing elements force re-perception loops.\n" +
+    "- Return direct coordinate/content values; do not describe actions or recommend solutions.\n" +
+    "- Caps: tools[] ≤ 250, text_blocks[] ≤ 200, sentences[] ≤ 200, words[] ≤ 600, columns[] ≤ 50, rows[] ≤ 200. If you must truncate, prioritize items in the active interaction area.\n" +
+    "- Set arrays to [] when not applicable. Set nullable scalar fields to null. Always return one valid JSON object.";
 
   const coderSystem =
     "You are a PRECISION desktop automation EXECUTOR. You receive:\n" +
     "  (a) the user's task,\n" +
-    "  (b) a JSON coordinate map from vision with universal tools[] entries {name, x, y, type},\n" +
+    "  (b) a JSON map from vision with: tools[] (interactive controls {name,x,y,type}), text_blocks[] (static UI text + bbox), sentences[] (sentence-level text + bbox), words[] (word-level OCR + bbox), columns[]/rows[] (table layout), and window/screenshot metadata,\n" +
     "  (c) the active window bounds from the OS (get_active_window_bounds),\n" +
     "  (d) the history of actions taken so far.\n\n" +
+    "Use text_blocks/sentences/words to READ the screen content (verify state, locate labels next to fields, confirm dialog messages) and tools[] to INTERACT. Use columns/rows for table-driven tasks (pick a row by its cell text, click a column header).\n\n" +
     "Your job: emit 1-3 tool calls that advance the task, using coordinates from the vision map VERBATIM.\n\n" +
     "The coder plans the sequential task. The vision model only supplies direct UI coordinate/content values for the selected program window.\n\n" +
     "=== OUTPUT FORMAT ===\n" +
@@ -1810,7 +1868,7 @@ async function runVisionGuidedAgent(opts: {
       if (seen.has(k)) return false;
       seen.add(k);
       return true;
-    }).slice(0, 120);
+    }).slice(0, 250);
 
     const programName =
       (typeof raw?.program?.name === "string" && raw.program.name.trim()) ||
@@ -1820,6 +1878,65 @@ async function runVisionGuidedAgent(opts: {
       (typeof raw?.program?.title === "string" && raw.program.title.trim()) ||
       (typeof raw?.window?.title === "string" && raw.window.title.trim()) ||
       null;
+
+    const normalizeBoxArray = (
+      arr: unknown,
+      cap: number,
+      requireText: boolean,
+      extra?: (item: any, out: Record<string, unknown>) => void,
+    ): Array<Record<string, unknown>> => {
+      if (!Array.isArray(arr)) return [];
+      const out: Array<Record<string, unknown>> = [];
+      for (const item of arr) {
+        if (!item || typeof item !== "object") continue;
+        const x = toNum((item as any).x);
+        const y = toNum((item as any).y);
+        if (x === null || y === null) continue;
+        const text = typeof (item as any).text === "string" ? (item as any).text : "";
+        if (requireText && !text.trim()) continue;
+        const entry: Record<string, unknown> = {
+          text,
+          x,
+          y,
+          width: toNum((item as any).width),
+          height: toNum((item as any).height),
+        };
+        if (extra) extra(item, entry);
+        out.push(entry);
+        if (out.length >= cap) break;
+      }
+      return out;
+    };
+
+    const textBlocks = normalizeBoxArray(raw?.text_blocks, 200, true, (item, out) => {
+      out.role = typeof (item as any).role === "string" ? (item as any).role : "text";
+    });
+    const sentences = normalizeBoxArray(raw?.sentences, 200, true);
+    const words = normalizeBoxArray(raw?.words, 600, true);
+    const columns = normalizeBoxArray(raw?.columns, 50, false, (item, out) => {
+      out.name = typeof (item as any).name === "string" ? (item as any).name : null;
+      out.index = toNum((item as any).index);
+    });
+    const rows: Array<Record<string, unknown>> = [];
+    if (Array.isArray(raw?.rows)) {
+      for (const r of raw.rows) {
+        if (!r || typeof r !== "object") continue;
+        const x = toNum((r as any).x);
+        const y = toNum((r as any).y);
+        if (x === null || y === null) continue;
+        rows.push({
+          index: toNum((r as any).index),
+          x,
+          y,
+          width: toNum((r as any).width),
+          height: toNum((r as any).height),
+          cells: Array.isArray((r as any).cells)
+            ? (r as any).cells.map((c: unknown) => (typeof c === "string" ? c : String(c ?? ""))).slice(0, 50)
+            : [],
+        });
+        if (rows.length >= 200) break;
+      }
+    }
 
     return {
       program: { name: programName, title: programTitle },
@@ -1835,6 +1952,11 @@ async function runVisionGuidedAgent(opts: {
         focused: typeof raw?.window?.focused === "boolean" ? raw.window.focused : null,
       },
       tools: deduped,
+      text_blocks: textBlocks,
+      sentences,
+      words,
+      columns,
+      rows,
       raw,
     };
   };
@@ -5770,6 +5892,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   const evolveToggleBtn = document.getElementById("evolve-toggle");
   if (evolveClearBtn) evolveClearBtn.addEventListener("click", () => { evolveClearMemory(); evolveRatchetLog("neutral", "Memory cleared by user."); });
   if (evolveToggleBtn) evolveToggleBtn.addEventListener("click", evolveToggleEnabled);
+  const evolveGradeCorrectBtn = document.getElementById("evolve-grade-correct");
+  const evolveGradeIncorrectBtn = document.getElementById("evolve-grade-incorrect");
+  if (evolveGradeCorrectBtn) evolveGradeCorrectBtn.addEventListener("click", () => evolveApplyHumanGrade(true));
+  if (evolveGradeIncorrectBtn) evolveGradeIncorrectBtn.addEventListener("click", () => evolveApplyHumanGrade(false));
   // Initialize evolve UI on startup
   evolveUpdateUI();
   if (!evolveEnabled) {
