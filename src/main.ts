@@ -13,6 +13,9 @@ let TELEGRAM_ENABLED = localStorage.getItem("telegram-enabled") === "true";
 let telegramPollTimer: ReturnType<typeof setInterval> | null = null;
 let telegramPollInFlight = false;
 let telegramLastUpdateId = parseInt(localStorage.getItem("telegram-last-update-id") || "0", 10) || 0;
+let OPENCLAW_HOST = localStorage.getItem("openclaw-host") || "http://localhost:8000";
+let OPENCLAW_API_KEY = localStorage.getItem("openclaw-api-key") || "";
+let OPENCLAW_ENABLED = localStorage.getItem("openclaw-enabled") === "true";
 const DEFAULT_CODER_MODEL = "Qwen/Qwen3.6-27B";
 const DEFAULT_VISION_MODEL = "Qwen/Qwen2-VL-7B-Instruct";
 // Track server-detected models so getVisionModel/getCoderModel can use them as better fallbacks
@@ -298,6 +301,16 @@ const aizSkillWidget = document.querySelector("#aiz-skill-widget") as HTMLDivEle
 const aizSkillBackdrop = document.querySelector("#aiz-skill-backdrop") as HTMLDivElement;
 const closeAizSkill = document.querySelector("#close-aiz-skill") as HTMLButtonElement;
 
+const btnOpenClaw = document.querySelector("#btn-openclaw") as HTMLButtonElement;
+const openclawWidget = document.querySelector("#openclaw-widget") as HTMLDivElement;
+const closeOpenClaw = document.querySelector("#close-openclaw") as HTMLButtonElement;
+const saveOpenClaw = document.querySelector("#save-openclaw") as HTMLButtonElement;
+const openclawHostInput = document.querySelector("#openclaw-host") as HTMLInputElement;
+const openclawApiKeyInput = document.querySelector("#openclaw-api-key") as HTMLInputElement;
+const openclawEnabledCheckbox = document.querySelector("#openclaw-enabled") as HTMLInputElement;
+const openclawStatus = document.querySelector("#openclaw-status") as HTMLDivElement;
+const openclawToast = document.querySelector("#openclaw-toast") as HTMLDivElement;
+
 // ── System Prompt ──
 const SYSTEM_PROMPT = `You are CATOG, an AI desktop automation agent running on the user's computer.
 You have access to a built-in terminal and native OS desktop automation tools.
@@ -410,6 +423,10 @@ function buildSkillAwareSystemPrompt(): string {
       })
       .join("\n\n");
     prompt += `\n\n**MCP server tools available (use these when relevant to the user's task):**\n${mcpSection}\n\nTo call an MCP tool, use a \`tool_call\` code block with the server name:\n\`\`\`tool_call\n{"tool": "<tool_name>", "server": "<server_name>", "arguments": {<args>}}\n\`\`\`\nAlways include the "server" field for MCP tools so they route to the correct server.`;
+  }
+
+  if (OPENCLAW_ENABLED) {
+    prompt += `\n\n**OpenClaw Integration Active:**\nYou are currently bridged to the OpenClaw autonomous framework. You can exchange messages and coordinate tasks with the OpenClaw agent hub at ${OPENCLAW_HOST}. If you need to delegate a complex autonomous task, you can suggest it to the user.`;
   }
 
   return prompt;
@@ -2861,6 +2878,31 @@ async function handleSaveTelegram(): Promise<void> {
   }
 }
 
+async function handleSaveOpenClaw(): Promise<void> {
+  OPENCLAW_HOST = openclawHostInput.value.trim();
+  OPENCLAW_API_KEY = openclawApiKeyInput.value.trim();
+  OPENCLAW_ENABLED = openclawEnabledCheckbox.checked;
+
+  localStorage.setItem("openclaw-host", OPENCLAW_HOST);
+  localStorage.setItem("openclaw-api-key", OPENCLAW_API_KEY);
+  localStorage.setItem("openclaw-enabled", String(OPENCLAW_ENABLED));
+
+  openclawStatus.textContent = "Syncing...";
+  try {
+    const resp = await fetch(`${OPENCLAW_HOST}/health`, {
+      headers: OPENCLAW_API_KEY ? { "Authorization": `Bearer ${OPENCLAW_API_KEY}` } : {}
+    });
+    if (resp.ok) {
+      openclawStatus.textContent = "✅ Connected to OpenClaw Agent Hub";
+      showToast(openclawToast, "OpenClaw synced successfully!", "success");
+    } else {
+      openclawStatus.textContent = "⚠️ OpenClaw host reached but returned error";
+    }
+  } catch (e) {
+    openclawStatus.textContent = "❌ Could not connect to OpenClaw host";
+  }
+}
+
 async function handleSaveAi(): Promise<void> {
   const visionUrlEl = document.querySelector("#ai-vision-url") as HTMLInputElement;
   const coderUrlEl = document.querySelector("#ai-coder-url") as HTMLInputElement;
@@ -5283,12 +5325,20 @@ window.addEventListener("DOMContentLoaded", async () => {
   btnMcp.addEventListener("click", () => openWidget(mcpWidget));
   btnAi.addEventListener("click", () => openWidget(aiWidget));
   btnTelegram.addEventListener("click", () => openWidget(telegramWidget));
+  btnOpenClaw.addEventListener("click", () => {
+    openWidget(openclawWidget);
+    openclawHostInput.value = OPENCLAW_HOST;
+    openclawApiKeyInput.value = OPENCLAW_API_KEY;
+    openclawEnabledCheckbox.checked = OPENCLAW_ENABLED;
+  });
   closeMcp.addEventListener("click", () => closeWidgetFn(mcpWidget));
   closeAi.addEventListener("click", () => closeWidgetFn(aiWidget));
   closeTelegram.addEventListener("click", () => closeWidgetFn(telegramWidget));
+  closeOpenClaw.addEventListener("click", () => closeWidgetFn(openclawWidget));
   saveMcp.addEventListener("click", handleSaveMcp);
   saveAi.addEventListener("click", () => { void handleSaveAi(); });
   saveTelegram.addEventListener("click", () => { void handleSaveTelegram(); });
+  saveOpenClaw.addEventListener("click", () => { void handleSaveOpenClaw(); });
 
   // Skill widget toggles
   btnImportSkill.addEventListener("click", () => openWidget(importSkillWidget));

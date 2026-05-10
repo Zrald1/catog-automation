@@ -65,6 +65,9 @@
           <button class="integration-btn" id="btn-telegram">
             <span class="integration-label">Telegram</span>
           </button>
+          <button class="integration-btn" id="btn-openclaw">
+            <span class="integration-label">OpenClaw</span>
+          </button>
         </div>
 
         <div class="mcp-servers-list" id="mcp-servers-list">
@@ -223,6 +226,48 @@
             <button class="widget-save" id="save-telegram">Save Telegram</button>
             <div class="toast hidden" id="telegram-toast"></div>
           </div>
+        </div>
+
+        <div id="openclaw-widget" class="widget hidden">
+          <div class="widget-header">
+            <h3>OpenClaw Integration</h3>
+            <button class="widget-close" id="close-openclaw">&times;</button>
+          </div>
+          <div class="widget-body">
+            <div class="ai-section">
+              <h4>🤖 Agent Bridge</h4>
+              <p class="section-desc">Connect Catog to the OpenClaw autonomous framework.</p>
+              <div class="form-group">
+                <label for="openclaw-host">OpenClaw Host URL</label>
+                <input type="url" id="openclaw-host" placeholder="http://localhost:8000" value="http://localhost:8000" />
+              </div>
+              <div class="form-group">
+                <label for="openclaw-api-key">API Key (if required)</label>
+                <input type="password" id="openclaw-api-key" placeholder="Enter OpenClaw API key..." autocomplete="off" />
+              </div>
+              <div class="form-group form-group-inline">
+                <label for="openclaw-enabled">Enable Autonomous Mode</label>
+                <input type="checkbox" id="openclaw-enabled" />
+              </div>
+            </div>
+            <div class="ai-status" id="openclaw-status"></div>
+            <button class="widget-save" id="save-openclaw">Sync with OpenClaw</button>
+            <div class="toast hidden" id="openclaw-toast"></div>
+        <div id="agent-hub-section" class="agent-hub-section">
+          <div class="panel-header">
+            <div class="panel-icon">🛰️</div>
+            <h3>Live Agent Hub</h3>
+          </div>
+          <div class="agent-hub-status">
+            <span class="hub-indicator"></span>
+            <span class="hub-text">Monitoring Multi-Agent Sync...</span>
+          </div>
+          <div id="agent-hub-log" class="agent-hub-log">
+            <div class="hub-msg system">Bridge initialized. Waiting for OpenClaw handshake...</div>
+          </div>
+          <button class="hub-share-btn" id="hub-share-btn">
+            <span>✨ Share Viral Demo Trace</span>
+          </button>
         </div>
 
       </aside>
