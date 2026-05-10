@@ -30,8 +30,9 @@
               <h1>CATOG Automation</h1>
               <p>Desktop MVP: local orchestrator + tool routing</p>
             </div>
-
+            <button id="btn-view-logs" class="logs-btn" title="View workflow logs" style="margin-left:auto; padding: 4px 12px; background: #374151; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">📄 Logs</button>
           </div>
+          <div class="ai-status" id="ai-status" style="margin-top: 12px; font-size: 11px; display: flex; flex-direction: row; gap: 12px; align-items: center; justify-content: flex-start; padding: 6px 12px; background: rgba(0, 0, 0, 0.2); border-radius: 6px; border: 1px solid rgba(255,255,255,0.05);"></div>
         </header>
         <div id="chat-log" class="chat-log"></div>
         <form id="chat-form" class="chat-form">
@@ -313,7 +314,6 @@
                 <input type="text" id="ai-omniparser-endpoint" placeholder="/parse" value="/parse" />
               </div>
             </div>
-            <div class="ai-status" id="ai-status"></div>
             <button class="widget-save" id="save-ai">Save & Test Connection</button>
           </div>
         </div>
@@ -347,6 +347,29 @@
 
       </aside>
     </main>
+
+    <!-- Logs Modal -->
+    <div id="logs-modal-backdrop" class="aiz-modal-backdrop hidden" style="z-index: 10000;">
+      <div id="logs-modal" class="aiz-modal hidden" style="max-width: 900px;">
+        <div class="aiz-modal-header">
+          <div class="aiz-modal-title">
+            <span class="aiz-modal-icon">📄</span>
+            <h3>Workflow Logs</h3>
+            <span class="aiz-modal-subtitle">Vision, OmniParser, and Coder Outputs</span>
+          </div>
+          <button class="aiz-modal-close" id="close-logs-modal">&times;</button>
+        </div>
+        <div class="aiz-modal-body" style="flex-direction: column;">
+          <div style="padding: 10px; display: flex; gap: 10px; background: #1f2937; border-bottom: 1px solid #374151;">
+            <button id="btn-export-logs" class="aiz-btn">💾 Save to logs.txt</button>
+            <button id="btn-clear-logs" class="aiz-btn">🗑 Clear</button>
+          </div>
+          <div id="logs-container" style="flex: 1; overflow-y: auto; padding: 15px; background: #111827; font-family: monospace; font-size: 12px; display: flex; flex-direction: column; gap: 8px;">
+            <!-- Logs go here -->
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Aiz Skill Builder Modal -->
     <div id="aiz-skill-backdrop" class="aiz-modal-backdrop hidden">
@@ -518,7 +541,14 @@
               <div id="aiz-config-body" class="aiz-config-body"></div>
             </div>
           </div>
-          <div class="aiz-node-output hidden" id="aiz-node-output"></div>
+          <div class="aiz-output-panel hidden" id="aiz-output-panel" style="display: flex; flex-direction: column; background: #111827; border-left: 1px solid #374151; width: 350px;">
+            <div style="display: flex; border-bottom: 1px solid #374151; background: #1f2937;">
+              <button id="aiz-tab-output" class="aiz-palette-tab active" style="flex:1;">Output</button>
+              <button id="aiz-tab-logs" class="aiz-palette-tab" style="flex:1;">Logs</button>
+            </div>
+            <div class="aiz-node-output" id="aiz-node-output" style="flex: 1; overflow-y: auto; display: block;"></div>
+            <div class="aiz-node-logs hidden" id="aiz-node-logs" style="flex: 1; overflow-y: auto; padding: 10px; font-family: monospace; font-size: 11px; display: none; flex-direction: column; gap: 6px;"></div>
+          </div>
         </div>
       </div>
     </div>

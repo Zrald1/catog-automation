@@ -152,6 +152,63 @@ let aizPlayAllRunning = false;
 // to keep only the best step sequences. Sends ≤2 sentences of UI context.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// WORKFLOW LOGS ENGINE
+const WORKFLOW_LOGS_KEY = "catog-workflow-logs";
+let workflowLogs: LogEntry[] = JSON.parse(localStorage.getItem(WORKFLOW_LOGS_KEY) || "[]");
+
+function addLogEntry(source: LogEntry["source"], level: LogEntry["level"], message: string, data?: any) {
+  const entry: LogEntry = { timestamp: Date.now(), source, level, message, data };
+  workflowLogs.push(entry);
+  
+  // Keep only the last 1000 logs to prevent localStorage quota issues
+  if (workflowLogs.length > 1000) {
+    workflowLogs = workflowLogs.slice(workflowLogs.length - 1000);
+  }
+  localStorage.setItem(WORKFLOW_LOGS_KEY, JSON.stringify(workflowLogs));
+  
+  renderWorkflowLogs();
+  
+  // Also dump to Aiz builder if active
+  const aizLogs = document.getElementById("aiz-node-logs");
+  if (aizLogs) {
+    const d = new Date(entry.timestamp);
+    const time = `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}:${d.getSeconds().toString().padStart(2, "0")}`;
+    const div = document.createElement("div");
+    let color = "#d1d5db"; // default tool
+    if (source === "vision") color = "#60a5fa"; // blue
+    else if (source === "omniparser") color = "#a78bfa"; // purple
+    else if (source === "coder") color = "#34d399"; // green
+    else if (level === "error") color = "#ef4444";
+    else if (level === "warn") color = "#f59e0b";
+    
+    div.innerHTML = `<span style="color:#6b7280">[${time}]</span> <strong style="color:${color};text-transform:uppercase;">${source}</strong>: ${message}`;
+    aizLogs.appendChild(div);
+    aizLogs.scrollTop = aizLogs.scrollHeight;
+  }
+}
+
+function renderWorkflowLogs() {
+  const container = document.getElementById("logs-container");
+  if (!container) return;
+  container.innerHTML = "";
+  workflowLogs.forEach(entry => {
+    const d = new Date(entry.timestamp);
+    const time = `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}:${d.getSeconds().toString().padStart(2, "0")}`;
+    let color = "#d1d5db";
+    if (entry.source === "vision") color = "#60a5fa";
+    else if (entry.source === "omniparser") color = "#a78bfa";
+    else if (entry.source === "coder") color = "#34d399";
+    else if (entry.level === "error") color = "#ef4444";
+    else if (entry.level === "warn") color = "#f59e0b";
+    
+    const div = document.createElement("div");
+    div.style.marginBottom = "4px";
+    div.innerHTML = `<span style="color:#6b7280">[${time}]</span> <strong style="color:${color};text-transform:uppercase;width:80px;display:inline-block;">${entry.source}</strong> ${entry.message}`;
+    container.appendChild(div);
+  });
+  container.scrollTop = container.scrollHeight;
+}
+
 const EVOLVE_MEMORY_KEY = "catog-evolve-memory";
 const EVOLVE_ENABLED_KEY = "catog-evolve-enabled";
 const EVOLVE_MAX_CATEGORIES = 50;
@@ -175,6 +232,7 @@ interface EvolveSequence {
   totalRuns: number;
   lastUsed: number;
   createdAt: number;
+  humanVerified?: boolean;
 }
 
 interface EvolveMemoryStore {
@@ -354,6 +412,7 @@ function evolveApplyHumanGrade(correct: boolean): void {
     totalRuns: 1,
     lastUsed: Date.now(),
     createdAt: Date.now(),
+    humanVerified: true,
   };
 
   if (!evolveMemory.categories[category]) {
@@ -584,6 +643,8 @@ interface ProgramTool {
   purpose: string;         // one-line description of what this control does
   location: string;        // textual hint where to find it ("File menu → Save As")
   shortcut?: string;       // keyboard shortcut if discovered
+  coordinates?: { x: number; y: number; width?: number; height?: number }; // pixel location at time of learning
+  interactionSequence?: string[];  // ordered steps e.g. ["click", "wait:500", "type:text"]
 }
 
 interface ProgramProfile {
@@ -593,10 +654,21 @@ interface ProgramProfile {
   iterations: number;
   createdAt: number;
   updatedAt: number;
+  softwareVersion?: string;       // detected version string (e.g. "16.0", "123.0.6312")
+  screenResolution?: { width: number; height: number }; // resolution when learned
+  windowBounds?: { x: number; y: number; width: number; height: number }; // window geometry when learned
 }
 
 interface ProgramProfileStore {
   profiles: Record<string, ProgramProfile>; // key: lowercased program name
+}
+
+interface LogEntry {
+  timestamp: number;
+  source: "vision" | "omniparser" | "coder" | "tool" | "system" | "user";
+  level: "info" | "warn" | "error" | "success";
+  message: string;
+  data?: any;
 }
 
 function exploreLoadProfiles(): ProgramProfileStore {
@@ -690,6 +762,7 @@ async function runProgramExploration(opts: ExploreOpts): Promise<ProgramProfile>
   const { programName, iterations, onLog, onStat } = opts;
   const discovered: ProgramTool[] = [];
   let detectedTitle = "";
+  let detectedVersion = "";
 
   exploreRunning = true;
   exploreStopFlag = false;
@@ -756,9 +829,9 @@ async function runProgramExploration(opts: ExploreOpts): Promise<ProgramProfile>
       if (screenshot) {
         const summarySystem =
           "You are a software-tools cataloguer. From the screenshot, list every visible interactive control (button, menu item, tab, ribbon icon, toolbar icon, input, checkbox, dropdown). " +
-          "For each, infer its FUNCTION based on its label, icon, and surrounding context — not just its name. Return EXACTLY ONE JSON object, no markdown:\n" +
-          "{ \"program_title\": string, \"tools\": [ { \"name\": string, \"type\": string, \"purpose\": string, \"location\": string, \"shortcut\": string|null } ] }\n" +
-          "Rules: name = visible label or icon meaning; type = button|menu_item|tab|toolbar_icon|input|checkbox|dropdown|other; purpose = one short sentence saying what clicking/using it does; location = where in the UI to find it (e.g. 'Home tab', 'File menu'); shortcut = visible accelerator like 'Ctrl+S' or null.";
+          "For each, infer its FUNCTION based on its label, icon, and surrounding context — not just its name. Also provide its center pixel coordinates (x,y) and bounding box (width,height) from the screenshot. Return EXACTLY ONE JSON object, no markdown:\n" +
+          "{ \"program_title\": string, \"software_version\": string|null, \"tools\": [ { \"name\": string, \"type\": string, \"purpose\": string, \"location\": string, \"shortcut\": string|null, \"x\": number, \"y\": number, \"width\": number|null, \"height\": number|null } ] }\n" +
+          "Rules: name = visible label or icon meaning; type = button|menu_item|tab|toolbar_icon|input|checkbox|dropdown|other; purpose = one short sentence saying what clicking/using it does; location = where in the UI to find it (e.g. 'Home tab', 'File menu'); shortcut = visible accelerator like 'Ctrl+S' or null; x,y = center click pixel; width,height = bounding box size. software_version = read the title bar, about dialog, or any visible version number.";
         const summary = await streamVisionChat([
           { role: "system", content: summarySystem },
           {
@@ -773,17 +846,25 @@ async function runProgramExploration(opts: ExploreOpts): Promise<ProgramProfile>
           const parsed = extractJsonFromResponse(summary);
           if (parsed && typeof parsed === "object") {
             if (typeof parsed.program_title === "string") detectedTitle = parsed.program_title.trim();
+            if (typeof parsed.software_version === "string" && parsed.software_version.trim()) {
+              detectedVersion = parsed.software_version.trim();
+            }
             const toolsArr = Array.isArray(parsed.tools) ? parsed.tools : [];
             for (const t of toolsArr) {
               if (!t || typeof t !== "object") continue;
               const name = typeof (t as any).name === "string" ? (t as any).name.trim() : "";
               if (!name) continue;
+              const toolX = typeof (t as any).x === "number" ? (t as any).x : undefined;
+              const toolY = typeof (t as any).y === "number" ? (t as any).y : undefined;
+              const toolW = typeof (t as any).width === "number" ? (t as any).width : undefined;
+              const toolH = typeof (t as any).height === "number" ? (t as any).height : undefined;
               discovered.push({
                 name,
                 type: typeof (t as any).type === "string" ? (t as any).type : "control",
                 purpose: typeof (t as any).purpose === "string" ? (t as any).purpose : "",
                 location: typeof (t as any).location === "string" ? (t as any).location : "",
                 shortcut: typeof (t as any).shortcut === "string" && (t as any).shortcut ? (t as any).shortcut : undefined,
+                coordinates: (toolX != null && toolY != null) ? { x: toolX, y: toolY, width: toolW, height: toolH } : undefined,
               });
             }
             onLog(`Catalogued ${toolsArr.length} controls from final screen.`, "tool");
@@ -800,6 +881,18 @@ async function runProgramExploration(opts: ExploreOpts): Promise<ProgramProfile>
   exploreRunning = false;
   onStat(discovered.length, iterCount);
 
+  // Capture screen resolution and window bounds for the profile
+  let screenRes: { width: number; height: number } | undefined;
+  let winBounds: { x: number; y: number; width: number; height: number } | undefined;
+  try {
+    const sz = await invoke<ScreenSize>("get_screen_size");
+    screenRes = { width: sz.width, height: sz.height };
+  } catch { /* ok */ }
+  try {
+    const wb = await invoke<{ x: number; y: number; width: number; height: number }>("get_active_window_bounds");
+    winBounds = { x: wb.x, y: wb.y, width: wb.width, height: wb.height };
+  } catch { /* ok */ }
+
   const profile: ProgramProfile = {
     programName: programName.trim(),
     programTitle: detectedTitle || undefined,
@@ -807,6 +900,9 @@ async function runProgramExploration(opts: ExploreOpts): Promise<ProgramProfile>
     iterations: iterCount,
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    softwareVersion: detectedVersion || undefined,
+    screenResolution: screenRes,
+    windowBounds: winBounds,
   };
 
   if (discovered.length > 0) {
@@ -1760,6 +1856,7 @@ interface OmniElement {
 
 async function runOmniParser(base64Png: string): Promise<OmniElement[] | null> {
   if (!AI_OMNIPARSER_ENABLED) return null;
+  addLogEntry("omniparser", "info", "Requesting OmniParser analysis...");
   const baseUrl = AI_OMNIPARSER_URL.replace(/\/+$/, "");
   const path = AI_OMNIPARSER_ENDPOINT.startsWith("/") ? AI_OMNIPARSER_ENDPOINT : `/${AI_OMNIPARSER_ENDPOINT}`;
   const url1 = `${baseUrl}${path}`;
@@ -1788,14 +1885,14 @@ async function runOmniParser(base64Png: string): Promise<OmniElement[] | null> {
         }
         const data = await res.json();
         const elements = normalizeOmniResponse(data);
-        if (elements.length > 0) return elements;
-        // Empty list is valid (blank screen) — return it on the first 200 OK.
+        addLogEntry("omniparser", "success", `Successfully parsed ${elements.length} elements from ${url}`);
         return elements;
       } catch (e) {
         lastErr = String(e);
       }
     }
   }
+  addLogEntry("omniparser", "error", `OmniParser request failed: ${lastErr}`);
   console.warn(`OmniParser request failed: ${lastErr}`);
   return null;
 }
@@ -2100,7 +2197,9 @@ Rules:
     let apiSuccess = false;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
+        if (attempt === 1) addLogEntry("vision", "info", `Vision-only request:\n${visionMessages.map(m => m.content).join("\n")}`);
         visionResponse = await streamVisionChat(visionMessages);
+        addLogEntry("vision", "success", `Vision-only response:\n${visionResponse}`);
         apiSuccess = true;
         break;
       } catch (e) {
@@ -2517,6 +2616,7 @@ async function runVisionGuidedAgent(opts: {
 
   for (let iter = 0; iter < maxIterations; iter++) {
     if (isStopped()) break;
+    addLogEntry("system", "info", `Iteration ${iter + 1}/${maxIterations}: capturing screen...`);
     log(`Iteration ${iter + 1}/${maxIterations}: capturing screen...`, "#38bdf8");
 
     const screenshot = await captureScreen();
@@ -2536,21 +2636,15 @@ async function runVisionGuidedAgent(opts: {
     let visionSuccess = false;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        perception = await streamVisionChat([
-          { role: "system", content: visionSystem },
-          {
-            role: "user",
-            content: [
-              { type: "image_url", image_url: { url: `data:image/png;base64,${screenshot}` } },
-              {
-                type: "text",
-                text:
-                  `Extract the coordinate map for this screen. ` +
-                  `Active target program: ${appContext || "unknown"}. ` +
-                  `Return coordinates ONLY for controls visible in that target program window. ` +
-                  `Ignore desktop/background/other app windows. ` +
-                  `Task context (do not act on it, only use to decide which elements matter): ${task}`
-              },
+          const visionPrompt = `Extract the coordinate map for this screen. Active target program: ${appContext || "unknown"}. Return coordinates ONLY for controls visible in that target program window. Ignore desktop/background/other app windows. Task context (do not act on it, only use to decide which elements matter): ${task}`;
+          if (attempt === 1) addLogEntry("vision", "info", `Prompt:\n${visionPrompt}`);
+          perception = await streamVisionChat([
+            { role: "system", content: visionSystem },
+            {
+              role: "user",
+              content: [
+                { type: "image_url", image_url: { url: `data:image/png;base64,${screenshot}` } },
+                { type: "text", text: visionPrompt },
             ],
           },
         ]);
@@ -2590,6 +2684,7 @@ async function runVisionGuidedAgent(opts: {
 
       // Salvage pass: ask coder model to reformat raw vision text into strict JSON.
       try {
+        addLogEntry("coder", "info", `Vision repair pass requested with content:\n${perception.substring(0, 500)}...`);
         const repairedJsonText = await streamChat([
           {
             role: "system",
@@ -2603,6 +2698,7 @@ async function runVisionGuidedAgent(opts: {
               "Reformat this vision output into valid JSON object:\n\n" + perception.substring(0, 12000)
           }
         ]);
+        addLogEntry("coder", "success", `Vision repair response:\n${repairedJsonText}`);
         const repaired = extractJsonFromResponse(repairedJsonText);
         if (repaired && typeof repaired === "object") {
           parsedVision = repaired;
@@ -2615,6 +2711,7 @@ async function runVisionGuidedAgent(opts: {
       // Second salvage: ask vision model itself to convert its previous text into strict JSON.
       if (!parsedVision && perception.trim().length > 0) {
         try {
+          addLogEntry("vision", "info", "Vision self-repair pass requested.");
           const visionRepair = await streamVisionChat([
             {
               role: "system",
@@ -2627,6 +2724,7 @@ async function runVisionGuidedAgent(opts: {
               content: `Convert to strict JSON object:\n${perception.substring(0, 12000)}`
             }
           ]);
+          addLogEntry("vision", "success", `Vision self-repair response:\n${visionRepair}`);
           const repairedByVision = extractJsonFromResponse(visionRepair);
           if (repairedByVision && typeof repairedByVision === "object") {
             parsedVision = repairedByVision;
@@ -2677,8 +2775,10 @@ async function runVisionGuidedAgent(opts: {
         count: omniElements.length,
         elements: omniElements.slice(0, 200),
       };
+      addLogEntry("omniparser", "success", `Parsed ${omniElements.length} elements.`);
       log(`OmniParser: ${omniElements.length} elements parsed.`, "#a78bfa");
     } else if (AI_OMNIPARSER_ENABLED) {
+      addLogEntry("omniparser", "warn", "Returned no elements or failed.");
       log("OmniParser returned no elements (or failed) — using vision map only.", "#f59e0b");
     }
 
@@ -2694,6 +2794,7 @@ async function runVisionGuidedAgent(opts: {
     const screenMapPreview = rawJson.length > 4000
       ? rawJson.substring(0, 4000) + "\n...[truncated for log preview]"
       : rawJson;
+    addLogEntry("vision", "success", `Map generated with ${elementsCount} elements. Raw Response:\n${perception}`);
     log(`Vision map: ${screenMapPreview.substring(0, 160).replace(/\s+/g, " ")}...`, "#38bdf8");
     if (typeof screenshotWidth === "number" && typeof screenshotHeight === "number") {
       log(`Vision measured screenshot ${screenshotWidth}x${screenshotHeight} with ${elementsCount} interactive element(s).`, "#38bdf8");
@@ -2776,6 +2877,7 @@ async function runVisionGuidedAgent(opts: {
     let coderSuccess = false;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
+        if (attempt === 1) addLogEntry("coder", "info", `Prompt:\n${coderUserContent}`);
         coderResponse = await streamChat([
           { role: "system", content: coderSystem },
           { role: "user", content: coderUserContent },
@@ -2792,8 +2894,12 @@ async function runVisionGuidedAgent(opts: {
         }
       }
     }
-    if (!coderSuccess) break;
+    if (!coderSuccess) {
+      addLogEntry("coder", "error", "Failed to generate tool calls after 3 attempts.");
+      break;
+    }
 
+    addLogEntry("coder", "success", `Action response:\n${coderResponse}`);
     history.push({ role: "user", content: `Screen JSON snippet: ${screenMapPreview.substring(0, 240)}` });
     history.push({ role: "assistant", content: coderResponse.substring(0, 600) });
 
@@ -2875,6 +2981,8 @@ async function runVisionGuidedAgent(opts: {
       .map((tr) => `${tr.server_name}/${tr.tool_name}: ${tr.result.substring(0, 240)}`)
       .join("\n");
     for (const tr of toolResults) {
+      const isError = tr.result.toLowerCase().includes("error") || tr.result.toLowerCase().includes("failed");
+      addLogEntry("tool", isError ? "error" : "success", `${tr.server_name}/${tr.tool_name}: ${tr.result.substring(0, 140)}`);
       log(`✅ ${tr.server_name}/${tr.tool_name}: ${tr.result.substring(0, 140)}`, "#22c55e");
     }
     if (toolResults.length > 0 && toolResults.every((tr) => tr.tool_name === "screenshot")) {
@@ -3988,7 +4096,7 @@ async function handleSaveTelegram(): Promise<void> {
   }
 }
 
-async function handleSaveAi(): Promise<void> {
+async function handleSaveAi(silent: boolean = false): Promise<void> {
   const visionUrlEl = document.querySelector("#ai-vision-url") as HTMLInputElement;
   const coderUrlEl = document.querySelector("#ai-coder-url") as HTMLInputElement;
   const visionModelEl = document.querySelector("#ai-vision-model") as HTMLInputElement;
@@ -4143,9 +4251,12 @@ async function handleSaveAi(): Promise<void> {
     omniStatus = `⏸ OmniParser disabled`;
   }
 
-  const usingLine = `<small>Using: coder=${finalCoderModel} | vision=${finalVisionModel}</small>`;
-  statusEl.innerHTML = `${coderStatus}<br>${visionStatus}<br>${omniStatus}<br>${usingLine}`;
-  appendMessage("assistant", "AI configuration updated.");
+  const badgeStyle = "padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.1);";
+  const usingLine = `<span style="${badgeStyle}">Using: coder=${finalCoderModel} | vision=${finalVisionModel}</span>`;
+  statusEl.innerHTML = `<span style="${badgeStyle}">${coderStatus}</span> <span style="${badgeStyle}">${visionStatus}</span> <span style="${badgeStyle}">${omniStatus}</span> ${usingLine}`;
+  if (!silent) {
+    appendMessage("assistant", "AI configuration updated.");
+  }
 }
 
 // ── Skill Import/Export ──
@@ -5308,7 +5419,8 @@ function setupAizSkillBuilder(): void {
                 };
                 const runner = mode === "vision_coder" ? runVisionGuidedAgent : runVisionOnlyAgent;
                 if (mode === "vision_coder") {
-                  log("Vision + Coder agent active.", "#22c55e");
+                  const modeText = AI_OMNIPARSER_ENABLED ? "Vision + Omni + Coder agent active." : "Vision + Coder agent active.";
+                  log(modeText, "#22c55e");
                 }
                 const summary = await runner({
                   task: instruction,
@@ -6290,7 +6402,8 @@ async function executeWorkflowStandalone(
 
             const runner = mode === "vision_coder" ? runVisionGuidedAgent : runVisionOnlyAgent;
             if (mode === "vision_coder") {
-              appendOut("Vision + Coder agent active.", "#22c55e");
+              const modeText = AI_OMNIPARSER_ENABLED ? "Vision + Omni + Coder agent active." : "Vision + Coder agent active.";
+              appendOut(modeText, "#22c55e");
             }
             const summary = await runner({
               task: instruction,
@@ -6548,45 +6661,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   (document.querySelector("#telegram-enabled") as HTMLInputElement).checked = TELEGRAM_ENABLED;
   restartTelegramPolling();
 
-  // Auto-detect model names from servers if not already saved
-  void (async () => {
-    try {
-      const coderUrl = AI_CODER_URL;
-      if (coderUrl) {
-        const res = await fetch(`${coderUrl}/v1/models`).catch(() => null);
-        if (res && res.ok) {
-          const data = await res.json();
-          const id = data.data?.[0]?.id || "";
-          if (id) {
-            detectedCoderModel = id;
-            const storedCoderModel = localStorage.getItem("ai-coder-model") || "";
-            if (!storedCoderModel || isBuiltInDefaultModel(storedCoderModel, "coder")) {
-              localStorage.setItem("ai-coder-model", id);
-              (document.querySelector("#ai-coder-model") as HTMLInputElement).value = id;
-            }
-          }
-        }
-      }
-    } catch { /* best effort */ }
-    try {
-      const visionUrl = AI_VISION_URL;
-      if (visionUrl) {
-        const res = await fetch(`${visionUrl}/v1/models`).catch(() => null);
-        if (res && res.ok) {
-          const data = await res.json();
-          const id = data.data?.[0]?.id || "";
-          if (id) {
-            detectedVisionModel = id;
-            const storedVisionModel = localStorage.getItem("ai-vision-model") || "";
-            if (!storedVisionModel || isBuiltInDefaultModel(storedVisionModel, "vision")) {
-              localStorage.setItem("ai-vision-model", id);
-              (document.querySelector("#ai-vision-model") as HTMLInputElement).value = id;
-            }
-          }
-        }
-      }
-    } catch { /* best effort */ }
-  })();
+  // Test connection and render status in chat header
+  void handleSaveAi(true);
 
   chatFormEl.addEventListener("submit", (e) => { void handleSubmit(e as SubmitEvent); });
   chatSendBtn.addEventListener("click", (e) => {
@@ -6706,4 +6782,63 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   });
   setupAizSkillBuilder();
+
+  // Workflow Logs UI
+  const btnViewLogs = document.getElementById("btn-view-logs");
+  const logsModalBackdrop = document.getElementById("logs-modal-backdrop");
+  const logsModal = document.getElementById("logs-modal");
+  const closeLogsModal = document.getElementById("close-logs-modal");
+  const btnClearLogs = document.getElementById("btn-clear-logs");
+  const btnExportLogs = document.getElementById("btn-export-logs");
+  
+  if (btnViewLogs) btnViewLogs.addEventListener("click", () => {
+    if (logsModalBackdrop) logsModalBackdrop.classList.remove("hidden");
+    if (logsModal) logsModal.classList.remove("hidden");
+    renderWorkflowLogs();
+  });
+  if (closeLogsModal) closeLogsModal.addEventListener("click", () => {
+    if (logsModalBackdrop) logsModalBackdrop.classList.add("hidden");
+    if (logsModal) logsModal.classList.add("hidden");
+  });
+  if (btnClearLogs) btnClearLogs.addEventListener("click", () => {
+    workflowLogs = [];
+    localStorage.removeItem(WORKFLOW_LOGS_KEY);
+    renderWorkflowLogs();
+    const aizLogs = document.getElementById("aiz-node-logs");
+    if (aizLogs) aizLogs.innerHTML = "";
+  });
+  if (btnExportLogs) btnExportLogs.addEventListener("click", () => {
+    if (workflowLogs.length === 0) return;
+    const txt = workflowLogs.map(l => {
+      const d = new Date(l.timestamp);
+      return `[${d.toISOString()}] ${l.source.toUpperCase()} (${l.level}): ${l.message}`;
+    }).join("\n");
+    const blob = new Blob([txt], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `catog-logs-${Date.now()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  // Aiz Logs Tabs
+  const aizTabOutput = document.getElementById("aiz-tab-output");
+  const aizTabLogs = document.getElementById("aiz-tab-logs");
+  const aizNodeOutput = document.getElementById("aiz-node-output");
+  const aizNodeLogs = document.getElementById("aiz-node-logs");
+  if (aizTabOutput && aizTabLogs && aizNodeOutput && aizNodeLogs) {
+    aizTabOutput.addEventListener("click", () => {
+      aizTabOutput.classList.add("active");
+      aizTabLogs.classList.remove("active");
+      aizNodeOutput.style.display = "block";
+      aizNodeLogs.style.display = "none";
+    });
+    aizTabLogs.addEventListener("click", () => {
+      aizTabLogs.classList.add("active");
+      aizTabOutput.classList.remove("active");
+      aizNodeLogs.style.display = "flex";
+      aizNodeOutput.style.display = "none";
+    });
+  }
 });

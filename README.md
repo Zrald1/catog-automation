@@ -360,9 +360,19 @@ OmniParser provides additional structured OCR element detection, running in para
 
 ### Environment Setup & PyTorch Install
 ```bash
+sudo ufw allow 8080/tcp
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/miniconda3
+source ~/miniconda3/etc/profile.d/conda.sh
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 conda create -n omni python=3.12 -y
 conda activate omni
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.0
+git clone https://github.com/microsoft/OmniParser.git
+cd OmniParser
+pip install -r requirements.txt
+pip install huggingface_hub
 ```
 
 ### Download OmniParser Weights
@@ -390,7 +400,15 @@ pip install einops timm
 ```bash
 # Configure port to avoid conflicts with vLLM (ports 8000, 30000)
 # Edit gradio_demo.py: demo.launch(server_name="0.0.0.0", server_port=8080, share=False)
+pip install paddleocr==2.7.3
+pip install paddlepaddle==2.6.1 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html
+pip install transformers==4.41.2
+pip install flash_attn
+mkdir -p ~/miniconda3/envs/omni/lib/python3.12/site-packages/flash_attn
+touch ~/miniconda3/envs/omni/lib/python3.12/site-packages/flash_attn/__init__.py
+pip install einops timm
 python gradio_demo.py
+# If error occured use this command 
 ```
 
 OmniParser will be accessible at `http://0.0.0.0:8080` and can be enabled in Catog's AI Settings panel.
