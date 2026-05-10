@@ -11,10 +11,12 @@ mod windows_agent;
 
 use contracts::{AddMcpServerRequest, AppStatus, McpServerStatus, ToolCallRequest, ToolDefinition};
 use desktop_automation::{
-    activate_application, click_at, drag, get_installed_applications, get_running_programs,
+    activate_application, click_at, clipboard_read, clipboard_write, drag,
+    get_installed_applications, get_running_programs,
     get_screen_size, get_active_window_bounds, get_active_window_edges, launch_application,
     long_press_at, press_key_combo, read_screen_region, save_file, scroll_at, type_text,
     select_file, select_folder, window_control_action,
+    hide_own_window, show_own_window,
 };
 use file_ops::{
     read_file, write_file, list_files, search_files, create_directory, delete_path,
@@ -254,6 +256,10 @@ pub fn run() {
             get_active_window_bounds,
             get_active_window_edges,
             window_control_action,
+            clipboard_read,
+            clipboard_write,
+            hide_own_window,
+            show_own_window,
             activate_application,
             // Enhanced File Operation Commands
             read_file,

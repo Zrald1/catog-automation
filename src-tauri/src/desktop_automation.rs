@@ -1403,6 +1403,119 @@ pub fn activate_application(name: String) -> Result<(), String> {
     activate_application_impl(&name)
 }
 
+// ── Clipboard read/write ──────────────────────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+fn clipboard_read_impl() -> Result<String, String> {
+    let output = Command::new("pbpaste")
+        .output()
+        .map_err(|e| format!("Failed to read clipboard: {}", e))?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_read_impl() -> Result<String, String> {
+    let output = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg("Get-Clipboard")
+        .output()
+        .map_err(|e| format!("Failed to read clipboard: {}", e))?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn clipboard_read_impl() -> Result<String, String> {
+    let output = Command::new("xclip")
+        .arg("-selection")
+        .arg("clipboard")
+        .arg("-o")
+        .output()
+        .or_else(|_| Command::new("xsel").arg("--clipboard").arg("--output").output())
+        .map_err(|e| format!("Failed to read clipboard: {}", e))?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn clipboard_write_impl(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut child = Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to write clipboard: {}", e))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    child.wait().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_write_impl(text: &str) -> Result<(), String> {
+    let escaped = text.replace("'", "''");
+    Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg(format!("Set-Clipboard '{}'", escaped))
+        .output()
+        .map_err(|e| format!("Failed to write clipboard: {}", e))?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn clipboard_write_impl(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut child = Command::new("xclip")
+        .arg("-selection")
+        .arg("clipboard")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .or_else(|_| {
+            Command::new("xsel")
+                .arg("--clipboard")
+                .arg("--input")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+        })
+        .map_err(|e| format!("Failed to write clipboard: {}", e))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    child.wait().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clipboard_read() -> Result<String, String> {
+    clipboard_read_impl()
+}
+
+#[tauri::command]
+pub fn clipboard_write(text: String) -> Result<(), String> {
+    clipboard_write_impl(&text)
+}
+
+// ── Hide / show own window ────────────────────────────────────────────────────
+// Used to hide the Catog window before taking screenshots so the workflow
+// output panel does not appear in the capture.
+
+#[tauri::command]
+pub fn hide_own_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.minimize().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_own_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.unminimize().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // ── Long press at coordinates ─────────────────────────────────────────────────
 
 #[cfg(target_os = "macos")]

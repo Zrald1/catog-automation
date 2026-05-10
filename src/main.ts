@@ -678,20 +678,21 @@ Available tools:
 - **get_running_programs** () — List currently running programs with window titles
 - **get_installed_applications** () — List installed applications on the system
 - **get_active_window_bounds** () — Get front window position and size {x, y, width, height}
-- **get_active_window_edges** () — Get front window edge/titlebar coordinates for drag-resize operations
-- **window_control_action** (action) — action: "maximize_window" | "minimize_window" | "close_window" | "restore_window"
-- **resize_window** (window_id, width, height) — Resize window to exact pixel dimensions
-- **move_window** (window_id, x, y) — Move window top-left corner to (x,y)
-- **right_click_at** (x, y) — Right-click at screen coordinates
-- **double_click_at** (x, y) — Double-click at screen coordinates
-- **telegram_send_message** (botToken, chatId, message, parseMode?, disableWebPagePreview?) — Send a Telegram bot message
+- **get_active_window_edge- **telegram_send_message** (botToken, chatId, message, parseMode?, disableWebPagePreview?) — Send a Telegram bot message
 - **run_saved_workflow** (workflowName or workflowId, task?) — Execute a saved Aiz workflow
+- **clipboard_read** () — Read current clipboard text content. Essential for extracting data from apps.
+- **clipboard_write** (text) — Write text to clipboard. Use to prepare data for pasting into apps.
+- **wait_ms** (ms) — Wait/delay for the specified milliseconds (100–30000). Use after navigation, app launch, or page load.
+- **activate_application** (name) — Bring an app to the foreground/focus. Use when switching between apps.
 
 Examples:
 - Click at coordinates: \`{"tool": "click_at", "arguments": {"x": 450, "y": 300}}\`
 - Take full screenshot: \`{"tool": "screenshot", "arguments": {}}\`
 - Type text: \`{"tool": "type_text", "arguments": {"text": "Hello World"}}\`
 - Launch app: \`{"tool": "launch_application", "arguments": {"name": "Calculator"}}\`
+- Copy from clipboard: \`{"tool": "clipboard_read", "arguments": {}}\`
+- Wait for page load: \`{"tool": "wait_ms", "arguments": {"ms": 2000}}\`
+- Switch to app: \`{"tool": "activate_application", "arguments": {"name": "Notes"}}\`
 
 **CRITICAL: Multi-step Execution**
 You MUST break tasks into sequential tool calls and output ALL tool calls in a single response.
@@ -707,12 +708,38 @@ For example, to open a website (if no browser is already running):
 {"tool": "type_text", "arguments": {"text": "https://www.youtube.com\\n"}}
 \`\`\`
 
+**Multi-App Workflow Pattern (e.g., Read from Gmail → Write to Notes):**
+When tasks span multiple applications, follow this pattern:
+1. Launch/activate the SOURCE app (e.g., Google Chrome)
+2. Navigate to the content (URL, menus, search)
+3. Wait for content to load: \`wait_ms\` with 2000-3000ms
+4. Take a screenshot to see the current state
+5. Select the content you need (click + drag, or Cmd+A, etc.)
+6. Copy with Cmd+C, then read it: \`clipboard_read\`
+7. Switch to the DESTINATION app: \`activate_application\`
+8. Wait briefly: \`wait_ms\` with 500ms
+9. Position cursor (click where you want to type/paste)
+10. Paste with Cmd+V or use \`type_text\` with the clipboard content
+11. Take a screenshot to verify
+
 **Workflow for automating a UI:**
 1. Use screenshot or get_screen_size to see the screen
 2. Analyze the screenshot to find where to interact
 3. Use click_at, type_text, or other tools to perform actions
 4. Take another screenshot to verify the result
 5. Repeat until the task is complete
+
+**Window resize and controls:**
+- To move or resize windows: use get_active_window_edges, then drag title bar or edge points.
+- To maximize/minimize/close: use window_control_action first, or use screenshot + click_at if visual state differs.
+
+**Skills:**
+When the user asks you to save something as a skill/automation, respond with:
+\`\`\`save_skill
+{"name": "Skill Name", "prompt": "The full prompt that triggers this automation"}
+\`\`\`
+
+Always be helpful, concise, and proactive.\`;ntil the task is complete
 
 **Window resize and controls:**
 - To move or resize windows: use get_active_window_edges, then drag title bar or edge points.
@@ -1308,12 +1335,24 @@ async function streamVisionChat(messages: VisionMessage[]): Promise<string> {
 
 async function captureScreen(): Promise<string | null> {
   try {
+    // Hide the Catog window before capture so the workflow output panel
+    // does not appear in the screenshot and confuse the vision model.
+    try { await invoke("hide_own_window"); } catch { /* ok if not supported */ }
+    // Brief delay so the window manager finishes the minimize animation.
+    await new Promise((r) => setTimeout(r, 350));
+
     const size = await invoke<ScreenSize>("get_screen_size");
     const region = await invoke<ScreenRegion>("read_screen_region", {
       x: 0, y: 0, width: size.width, height: size.height,
     });
+
+    // Restore the Catog window after capture (don't await — let it happen in background).
+    invoke("show_own_window").catch(() => { /* ok */ });
+
     return region.data || null;
   } catch {
+    // Restore on error too
+    invoke("show_own_window").catch(() => { /* ok */ });
     return null;
   }
 }
@@ -2226,6 +2265,12 @@ const NATIVE_DESKTOP_TOOLS = new Set([
   "get_screen_size", "launch_application", "get_running_programs",
   "get_installed_applications", "get_active_window_bounds", "get_active_window_edges",
   "window_control_action", "long_press", "scroll", "maximize_window", "minimize_window", "close_window",
+  // Clipboard tools — essential for cross-app data transfer
+  "clipboard_read", "clipboard_write",
+  // Wait tool — allows explicit delays for page loads etc.
+  "wait_ms",
+  // App switching
+  "activate_application",
   // Agent tools — window management
   "agent_get_active_window", "agent_get_all_windows", "agent_get_window_by_title",
   "agent_resize_window", "agent_move_window", "agent_minimize_window", "agent_maximize_window",
@@ -2471,6 +2516,30 @@ async function executeToolCall(server: string, tool: string, args: Record<string
     }
     if (tool === "run_saved_workflow" || normalizedTool === "run_saved_workflow") {
       return executeSavedWorkflowFromChat(payload);
+    }
+    // Clipboard tools — essential for cross-app data transfer
+    if (tool === "clipboard_read" || normalizedTool === "clipboard_read") {
+      const text = await invoke<string>("clipboard_read");
+      return text || "(clipboard is empty)";
+    }
+    if (tool === "clipboard_write" || normalizedTool === "clipboard_write") {
+      const text = typeof payload.text === "string" ? payload.text : String(payload.text || payload.content || "");
+      await invoke("clipboard_write", { text });
+      return `Clipboard set: ${text.substring(0, 100)}${text.length > 100 ? "..." : ""}`;
+    }
+    // Wait tool — explicit delay for page loads, animations, etc.
+    if (tool === "wait_ms" || normalizedTool === "wait_ms") {
+      const ms = Math.min(Math.max(Number(payload.ms || payload.duration || payload.delay || 1000), 100), 30000);
+      await new Promise((r) => setTimeout(r, ms));
+      return `Waited ${ms}ms`;
+    }
+    // App switching — bring an app to the foreground
+    if (tool === "activate_application" || normalizedTool === "activate_application") {
+      const appName = typeof payload.name === "string" ? payload.name : String(payload.name || payload.app || "");
+      if (!appName) return "Error: activate_application requires a name";
+      await invoke("activate_application", { name: appName });
+      await new Promise((r) => setTimeout(r, 500));
+      return `Activated: ${appName}`;
     }
     if (tool === "double_click_at") {
       const x = Number(payload.x);
