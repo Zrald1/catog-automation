@@ -39,6 +39,35 @@ function isBuiltInDefaultModel(model: string, kind: "coder" | "vision"): boolean
   return model === (kind === "coder" ? DEFAULT_CODER_MODEL : DEFAULT_VISION_MODEL);
 }
 
+// Shared exhaustive vision prompt — used by every screenshot → vision call so the
+// coder always receives the full UI map: buttons, every visible word, every
+// sentence, columns, rows, and labels with bounding-box coordinates.
+const RICH_VISION_LOCATOR_PROMPT =
+  "You are a UNIVERSAL UI COORDINATE + TEXT MAPPER. Return EXACTLY ONE valid JSON object — no markdown, no prose, no code fences.\n\n" +
+  "Coordinates are integer pixels measured from the screenshot's top-left (0,0). Bounding boxes use {x, y, width, height} where (x, y) is the top-left corner. Center fields {x, y} are the click center.\n\n" +
+  "Schema:\n" +
+  "{\n" +
+  "  \"program\": { \"name\": string|null, \"title\": string|null },\n" +
+  "  \"screenshot\": { \"width\": number, \"height\": number },\n" +
+  "  \"window\": { \"x\": number|null, \"y\": number|null, \"width\": number|null, \"height\": number|null, \"focused\": boolean|null },\n" +
+  "  \"tools\": [ { \"name\": string, \"x\": number, \"y\": number, \"width\": number|null, \"height\": number|null, \"type\": string, \"enabled\": boolean, \"visible\": boolean } ],\n" +
+  "  \"text_blocks\": [ { \"text\": string, \"x\": number, \"y\": number, \"width\": number, \"height\": number, \"role\": string } ],\n" +
+  "  \"sentences\":   [ { \"text\": string, \"x\": number, \"y\": number, \"width\": number, \"height\": number } ],\n" +
+  "  \"words\":       [ { \"text\": string, \"x\": number, \"y\": number, \"width\": number, \"height\": number } ],\n" +
+  "  \"columns\":     [ { \"name\": string|null, \"index\": number, \"x\": number, \"y\": number, \"width\": number, \"height\": number } ],\n" +
+  "  \"rows\":        [ { \"index\": number, \"x\": number, \"y\": number, \"width\": number, \"height\": number, \"cells\": [string] } ]\n" +
+  "}\n\n" +
+  "Be EXHAUSTIVE. Capture the entire program, not a sample:\n" +
+  "- tools[]   — every interactive control (buttons, tabs, menu items, toolbar icons, ribbon buttons, checkboxes, radio buttons, dropdowns, sliders, inputs/textfields, links, scrollbars, titlebar buttons). Include the visible label or icon meaning.\n" +
+  "- text_blocks[] — every static text region (headings, paragraphs, labels, status bars, tooltips, menu text, list items). role: heading|paragraph|label|caption|status|tooltip|menu_text|list_item.\n" +
+  "- sentences[]   — split paragraphs into individual sentences with their own bounding boxes.\n" +
+  "- words[]       — every visible word as its own entry with its own bbox. This is OCR-level granularity.\n" +
+  "- columns[]/rows[] — for tables, lists, grids, spreadsheets, file explorers, mail clients: column headers and every row with its cell text.\n" +
+  "- IMPORTANT: extract ONLY from the active target program window named in the user request; ignore other windows / background UI / desktop wallpaper.\n" +
+  "- Do not describe actions, do not recommend solutions — emit raw coordinate/content values only.\n" +
+  "- Caps: tools ≤ 250, text_blocks ≤ 200, sentences ≤ 200, words ≤ 600, columns ≤ 50, rows ≤ 200. If you must truncate, prioritize items in the active interaction area.\n" +
+  "- Set arrays to [] when not applicable; set nullable scalars to null. Always return one valid JSON object.";
+
 // ── Types ──
 interface Skill {
   id: string;
@@ -168,6 +197,42 @@ interface EvolvePendingRun {
   steps: EvolveStep[];
 }
 let evolvePendingRun: EvolvePendingRun | null = null;
+
+// Heuristic: is this message asking the agent to drive the desktop (click,
+// type, open apps, navigate UI), or is it just plain conversation? The vision
+// snapshot path hides the Catog window mid-call, which is correct for
+// automation tasks but jarring for chat. When in doubt, skip the snapshot.
+const DESKTOP_AUTOMATION_VERBS = [
+  "open", "launch", "start", "run", "execute",
+  "click", "double-click", "right-click", "press", "tap",
+  "type", "enter", "input", "fill", "paste",
+  "navigate", "browse", "go to", "visit",
+  "search", "find on", "look up",
+  "close", "minimize", "maximize", "resize", "move window",
+  "scroll", "drag", "drop",
+  "screenshot", "capture screen",
+  "save file", "open file", "create file", "delete file",
+  "download", "upload",
+  "switch to", "focus",
+  "automate", "workflow", "task",
+];
+const DESKTOP_AUTOMATION_TARGETS = [
+  "browser", "chrome", "firefox", "edge", "safari",
+  "notepad", "word", "excel", "powerpoint", "outlook",
+  "explorer", "file explorer", "finder",
+  "terminal", "cmd", "powershell", "bash",
+  "calculator", "settings", "control panel",
+  "vscode", "code editor",
+  "window", "tab", "menu", "button", "address bar",
+  "desktop", "taskbar", "start menu",
+];
+function looksLikeDesktopAutomationTask(userMessage: string): boolean {
+  const msg = userMessage.toLowerCase();
+  if (msg.length < 4) return false;
+  if (DESKTOP_AUTOMATION_VERBS.some((v) => msg.includes(v))) return true;
+  if (DESKTOP_AUTOMATION_TARGETS.some((t) => msg.includes(t))) return true;
+  return false;
+}
 
 // ── Task Classifier ──
 // Extracts normalized keywords from user request to create a task category.
@@ -1004,6 +1069,18 @@ function renderMarkdown(input: string): string {
 // Render markdown into a message bubble.
 function setAssistantContent(el: HTMLDivElement, raw: string): void {
   el.innerHTML = renderMarkdown(raw);
+  stickChatToBottom();
+}
+
+// Auto-scroll the chat log to the bottom when the agent emits new output.
+// Only sticks if the user is already near the bottom — if they scrolled up to
+// inspect history, leave them where they are.
+function stickChatToBottom(force = false): void {
+  if (!chatLogEl) return;
+  const distanceFromBottom = chatLogEl.scrollHeight - chatLogEl.scrollTop - chatLogEl.clientHeight;
+  if (force || distanceFromBottom < 160) {
+    chatLogEl.scrollTop = chatLogEl.scrollHeight;
+  }
 }
 
 // ── Chat UI ──
@@ -1032,7 +1109,7 @@ function appendMessage(role: "user" | "assistant" | "system", content: string): 
   msg.appendChild(avatar);
   msg.appendChild(body);
   chatLogEl.appendChild(msg);
-  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+  stickChatToBottom(true);
   return contentDiv;
 }
 
@@ -1340,7 +1417,7 @@ async function streamVisionChat(messages: VisionMessage[]): Promise<string> {
     messages,
     stream: false,
     temperature: 0,
-    max_tokens: 3072,
+    max_tokens: 16384,
   };
 
   let response = await fetch(url, {
@@ -2918,8 +2995,12 @@ async function processUserMessage(userMessage: string, opts: { source?: "chat" |
   conversationHistory.push({ role: "user", content: userMessage });
   saveSessionById(processingSessionId, conversationHistory);
 
-  // Self-Evolving Engine: capture 2-sentence UI summary before AI processes
-  void evolveGet2SentenceUISummary();
+  // Self-Evolving Engine: only capture a UI snapshot for messages that look like
+  // a desktop-automation task. Plain chat must NOT trigger captureScreen() —
+  // that hides the Catog window and disrupts the conversation.
+  if (looksLikeDesktopAutomationTask(userMessage)) {
+    void evolveGet2SentenceUISummary();
+  }
 
   const thinkingEl = appendThinking();
   let finalReply = "";
@@ -2957,6 +3038,7 @@ async function processUserMessage(userMessage: string, opts: { source?: "chat" |
         thinkingEl.dataset.raw = cleanResponse;
       } else {
         thinkingEl.textContent = `Agent step ${agentIter}...`;
+        stickChatToBottom();
       }
 
       // Push assistant turn into message history for the loop
@@ -2998,6 +3080,7 @@ async function processUserMessage(userMessage: string, opts: { source?: "chat" |
       finalReply = lastCleanText;
     } else {
       thinkingEl.textContent = "Done.";
+      stickChatToBottom();
       finalReply = "Done.";
     }
     // Save the final assistant response to conversation history
@@ -3010,9 +3093,11 @@ async function processUserMessage(userMessage: string, opts: { source?: "chat" |
     if (abortController.signal.aborted) {
       thinkingEl.textContent = "⏹ Stopped.";
       thinkingEl.style.color = "#f59e0b";
+      stickChatToBottom();
       finalReply = "Stopped.";
     } else {
       thinkingEl.textContent = `⚠️ Error: ${String(error)}\n\nMake sure vLLM is running at ${AI_CODER_URL}`;
+      stickChatToBottom();
       finalReply = `Error: ${String(error)}`;
       if (opts.replyToTelegram) {
         await sendTelegramReply(finalReply);
@@ -4681,12 +4766,12 @@ function setupAizSkillBuilder(): void {
                       const visionBase64 = await captureScreen();
                       if (visionBase64) {
                         const visionAnalysisMessages: VisionMessage[] = [
-                          { role: "system", content: "You are a UI element locator. Analyze the screenshot and identify ALL interactive elements visible (buttons, text fields, search boxes, links, tabs, menus, icons). For each element provide: exact pixel coordinates (x, y for its center), element type, and label/text. Format as a numbered list. Be precise with coordinates — the numbers must be accurate pixel positions in the image. Also describe the overall screen layout briefly." },
+                          { role: "system", content: RICH_VISION_LOCATOR_PROMPT },
                           {
                             role: "user",
                             content: [
                               { type: "image_url", image_url: { url: `data:image/png;base64,${visionBase64}` } },
-                              { type: "text", text: `Task context: ${instruction}\n\nList all visible interactive UI elements with their exact center coordinates.` },
+                              { type: "text", text: `Task context: ${instruction}\n\nReturn the full JSON map (program, window, tools, text_blocks, sentences, words, columns, rows) for the active target program window.` },
                             ],
                           },
                         ];
@@ -4694,13 +4779,14 @@ function setupAizSkillBuilder(): void {
 
                         const visionDiv = document.createElement("div");
                         visionDiv.className = "aiz-output-item";
-                        visionDiv.textContent = `🔍 Vision analysis: ${visionAnalysis.substring(0, 200)}`;
+                        visionDiv.textContent = `🔍 Vision analysis: ${visionAnalysis}`;
                         visionDiv.style.color = "#38bdf8";
+                        visionDiv.style.whiteSpace = "pre-wrap";
                         aizOutputEl!.appendChild(visionDiv);
                         scrollOutputToBottom(aizOutputEl!);
 
-                        const truncatedVision = visionAnalysis.length > 1500
-                          ? visionAnalysis.substring(0, 1500) + "...[truncated]"
+                        const truncatedVision = visionAnalysis.length > 24000
+                          ? visionAnalysis.substring(0, 24000) + "...[truncated]"
                           : visionAnalysis;
                         toolSummary += `\n\n[Vision model analyzed the screenshot and found these UI elements]:\n${truncatedVision}`;
                       }
@@ -5483,6 +5569,7 @@ async function executeWorkflowStandalone(
     d.className = "aiz-output-item";
     d.textContent = text;
     d.style.color = color;
+    d.style.whiteSpace = "pre-wrap";
     outputEl.appendChild(d);
     scrollOutputToBottom(outputEl);
   };
@@ -5646,18 +5733,18 @@ async function executeWorkflowStandalone(
                   const visionBase64 = await captureScreen();
                   if (visionBase64) {
                     const visionAnalysisMessages: VisionMessage[] = [
-                      { role: "system", content: "You are a UI element locator. Analyze the screenshot and identify ALL interactive elements visible (buttons, text fields, search boxes, links, tabs, menus, icons). For each element provide: exact pixel coordinates (x, y for its center), element type, and label/text. Format as a numbered list. Be precise with coordinates — the numbers must be accurate pixel positions in the image. Also describe the overall screen layout briefly." },
+                      { role: "system", content: RICH_VISION_LOCATOR_PROMPT },
                       {
                         role: "user",
                         content: [
                           { type: "image_url", image_url: { url: `data:image/png;base64,${visionBase64}` } },
-                          { type: "text", text: `Task context: ${instruction}\n\nList all visible interactive UI elements with their exact center coordinates.` },
+                          { type: "text", text: `Task context: ${instruction}\n\nReturn the full JSON map (program, window, tools, text_blocks, sentences, words, columns, rows) for the active target program window.` },
                         ],
                       },
                     ];
                     const visionAnalysis = await streamVisionChat(visionAnalysisMessages);
-                    appendOut(`🔍 Vision analysis: ${visionAnalysis.substring(0, 200)}`, "#38bdf8");
-                    const truncatedVision = visionAnalysis.length > 1500 ? visionAnalysis.substring(0, 1500) + "...[truncated]" : visionAnalysis;
+                    appendOut(`🔍 Vision analysis: ${visionAnalysis}`, "#38bdf8");
+                    const truncatedVision = visionAnalysis.length > 24000 ? visionAnalysis.substring(0, 24000) + "...[truncated]" : visionAnalysis;
                     toolSummary += `\n\n[Vision model analyzed the screenshot and found these UI elements]:\n${truncatedVision}`;
                   }
                 } catch (visionErr) {
