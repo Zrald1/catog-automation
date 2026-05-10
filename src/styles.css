@@ -509,7 +509,7 @@ body {
   border-radius: var(--radius-xl);
   border: 1px solid rgba(255, 255, 255, 0.15);
   flex-shrink: 0;
-  margin-top: 12px;
+  margin-top: auto;
   position: relative;
   z-index: 100;
   box-shadow: var(--shadow-lg), 0 0 20px rgba(255, 255, 255, 0.06);
@@ -944,6 +944,44 @@ body {
 .empty-state-icon {
   font-size: 28px;
   opacity: 0.4;
+}
+
+/* Status Tabs */
+.status-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 8px;
+}
+
+.status-tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  transition: all 0.2s ease;
+}
+
+.status-tab:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+
+.status-tab.active {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent);
+}
+
+.status-content.hidden {
+  display: none;
 }
 
 /* Integration Buttons */

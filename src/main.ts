@@ -603,6 +603,26 @@ const menuToggleEl = document.querySelector("#menu-toggle") as HTMLButtonElement
 const appShellEl = document.querySelector(".app-shell") as HTMLElement;
 const btnMcp = document.querySelector("#btn-mcp") as HTMLButtonElement;
 const btnAi = document.querySelector("#btn-ai") as HTMLButtonElement;
+
+const tabSelfEvolving = document.querySelector("#tab-self-evolving") as HTMLButtonElement;
+const tabIntegrations = document.querySelector("#tab-integrations") as HTMLButtonElement;
+const contentSelfEvolving = document.querySelector("#content-self-evolving") as HTMLDivElement;
+const contentIntegrations = document.querySelector("#content-integrations") as HTMLDivElement;
+
+if (tabSelfEvolving && tabIntegrations && contentSelfEvolving && contentIntegrations) {
+  tabSelfEvolving.addEventListener("click", () => {
+    tabSelfEvolving.classList.add("active");
+    tabIntegrations.classList.remove("active");
+    contentSelfEvolving.classList.remove("hidden");
+    contentIntegrations.classList.add("hidden");
+  });
+  tabIntegrations.addEventListener("click", () => {
+    tabIntegrations.classList.add("active");
+    tabSelfEvolving.classList.remove("active");
+    contentIntegrations.classList.remove("hidden");
+    contentSelfEvolving.classList.add("hidden");
+  });
+}
 const mcpWidget = document.querySelector("#mcp-widget") as HTMLDivElement;
 const aiWidget = document.querySelector("#ai-widget") as HTMLDivElement;
 const closeMcp = document.querySelector("#close-mcp") as HTMLButtonElement;

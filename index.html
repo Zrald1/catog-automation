@@ -50,81 +50,90 @@
       </aside>
 
       <aside class="panel status-panel" id="status-panel">
-        <div class="panel-header">
-          <div class="panel-icon">&#9881;</div>
-          <h2>Integrations</h2>
+        <div class="status-tabs" id="status-tabs">
+          <button class="status-tab active" id="tab-self-evolving">Self-Evolving</button>
+          <button class="status-tab" id="tab-integrations">Integration</button>
         </div>
 
-        <div class="integration-buttons">
-          <button class="integration-btn" id="btn-mcp">
-            <span class="integration-label">MCP</span>
-          </button>
-          <button class="integration-btn" id="btn-ai">
-            <span class="integration-label">AI AMD GPU</span>
-          </button>
-          <button class="integration-btn" id="btn-telegram">
-            <span class="integration-label">Telegram</span>
-          </button>
-        </div>
-
-        <div class="mcp-servers-list" id="mcp-servers-list">
+        <div id="content-self-evolving" class="status-content">
           <div class="panel-header">
-            <div class="panel-icon">&#9679;</div>
-            <h3>MCP Servers</h3>
+            <div class="panel-icon">🧬</div>
+            <h3>Self-Evolving Engine</h3>
           </div>
-          <div class="mcp-servers-container" id="mcp-servers-container">
-            <!-- Server status items will be dynamically added here -->
+          <div class="evolve-panel" id="evolve-panel">
+            <div class="evolve-status" id="evolve-status">
+              <span class="evolve-indicator idle" id="evolve-indicator"></span>
+              <span class="evolve-text" id="evolve-status-text">Idle — waiting for task</span>
+            </div>
+            <div class="evolve-stats" id="evolve-stats">
+              <div class="evolve-stat">
+                <span class="evolve-stat-label">Memories</span>
+                <span class="evolve-stat-value" id="evolve-memory-count">0</span>
+              </div>
+              <div class="evolve-stat">
+                <span class="evolve-stat-label">Success Rate</span>
+                <span class="evolve-stat-value" id="evolve-success-rate">—</span>
+              </div>
+              <div class="evolve-stat">
+                <span class="evolve-stat-label">Steps Learned</span>
+                <span class="evolve-stat-value" id="evolve-steps-learned">0</span>
+              </div>
+            </div>
+            <div class="evolve-ui-summary" id="evolve-ui-summary">
+              <div class="evolve-ui-label">📸 UI Context (2-sentence)</div>
+              <div class="evolve-ui-text" id="evolve-ui-text">No UI snapshot yet.</div>
+            </div>
+            <div class="evolve-ratchet" id="evolve-ratchet">
+              <div class="evolve-ui-label">🔄 Ratchet Log</div>
+              <div class="evolve-ratchet-log" id="evolve-ratchet-log"></div>
+            </div>
+            <div class="evolve-controls">
+              <button class="evolve-btn" id="evolve-clear-memory" title="Clear all learned step memories">🗑 Clear Memory</button>
+              <button class="evolve-btn" id="evolve-toggle" title="Enable or disable self-evolving mode">
+                <span id="evolve-toggle-icon">⏸</span>
+                <span id="evolve-toggle-label">Enabled</span>
+              </button>
+            </div>
           </div>
+
+          <div class="panel-header" style="margin-top: 24px;">
+            <div class="panel-icon">&#9881;</div>
+            <h3>Automated Skills</h3>
+          </div>
+          <div class="skill-buttons">
+            <button class="skill-btn" id="btn-aiz-skill">+ Add Skill</button>
+            <button class="skill-btn" id="btn-import-skill">Import Skill</button>
+            <button class="skill-btn" id="btn-export-skill">Export Skill</button>
+          </div>
+          <div id="skills-list" class="skills-list"></div>
         </div>
 
-        <div class="panel-header">
-          <div class="panel-icon">&#9881;</div>
-          <h3>Automated Skills</h3>
-        </div>
-        <div class="skill-buttons">
-          <button class="skill-btn" id="btn-aiz-skill">+ Add Skill</button>
-          <button class="skill-btn" id="btn-import-skill">Import Skill</button>
-          <button class="skill-btn" id="btn-export-skill">Export Skill</button>
-        </div>
-        <div id="skills-list" class="skills-list"></div>
+        <div id="content-integrations" class="status-content hidden">
+          <div class="panel-header">
+            <div class="panel-icon">&#9881;</div>
+            <h2>Integrations</h2>
+          </div>
 
-        <div class="panel-header" style="margin-top: 12px;">
-          <div class="panel-icon">🧬</div>
-          <h3>Self-Evolving Engine</h3>
-        </div>
-        <div class="evolve-panel" id="evolve-panel">
-          <div class="evolve-status" id="evolve-status">
-            <span class="evolve-indicator idle" id="evolve-indicator"></span>
-            <span class="evolve-text" id="evolve-status-text">Idle — waiting for task</span>
-          </div>
-          <div class="evolve-stats" id="evolve-stats">
-            <div class="evolve-stat">
-              <span class="evolve-stat-label">Memories</span>
-              <span class="evolve-stat-value" id="evolve-memory-count">0</span>
-            </div>
-            <div class="evolve-stat">
-              <span class="evolve-stat-label">Success Rate</span>
-              <span class="evolve-stat-value" id="evolve-success-rate">—</span>
-            </div>
-            <div class="evolve-stat">
-              <span class="evolve-stat-label">Steps Learned</span>
-              <span class="evolve-stat-value" id="evolve-steps-learned">0</span>
-            </div>
-          </div>
-          <div class="evolve-ui-summary" id="evolve-ui-summary">
-            <div class="evolve-ui-label">📸 UI Context (2-sentence)</div>
-            <div class="evolve-ui-text" id="evolve-ui-text">No UI snapshot yet.</div>
-          </div>
-          <div class="evolve-ratchet" id="evolve-ratchet">
-            <div class="evolve-ui-label">🔄 Ratchet Log</div>
-            <div class="evolve-ratchet-log" id="evolve-ratchet-log"></div>
-          </div>
-          <div class="evolve-controls">
-            <button class="evolve-btn" id="evolve-clear-memory" title="Clear all learned step memories">🗑 Clear Memory</button>
-            <button class="evolve-btn" id="evolve-toggle" title="Enable or disable self-evolving mode">
-              <span id="evolve-toggle-icon">⏸</span>
-              <span id="evolve-toggle-label">Enabled</span>
+          <div class="integration-buttons">
+            <button class="integration-btn" id="btn-mcp">
+              <span class="integration-label">MCP</span>
             </button>
+            <button class="integration-btn" id="btn-ai">
+              <span class="integration-label">AI AMD GPU</span>
+            </button>
+            <button class="integration-btn" id="btn-telegram">
+              <span class="integration-label">Telegram</span>
+            </button>
+          </div>
+
+          <div class="mcp-servers-list" id="mcp-servers-list">
+            <div class="panel-header">
+              <div class="panel-icon">&#9679;</div>
+              <h3>MCP Servers</h3>
+            </div>
+            <div class="mcp-servers-container" id="mcp-servers-container">
+              <!-- Server status items will be dynamically added here -->
+            </div>
           </div>
         </div>
 
